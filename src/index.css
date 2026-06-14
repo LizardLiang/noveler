@@ -1,84 +1,118 @@
 @import "tailwindcss";
+@import "./styles/tokens.css";
 
 @theme {
-  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-sans: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 @layer base {
   :root {
-    color-scheme: light;
+    color-scheme: dark;
     font-family: var(--font-sans);
-    line-height: 1.5;
+    line-height: 1.6;
     font-weight: 400;
     font-synthesis: none;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     -webkit-text-size-adjust: 100%;
+    font-size: var(--font-size-base);
   }
 
-  html {
-    min-width: 320px;
-    min-height: 100%;
-    background: #f8fafc;
+  [data-theme="light"] {
+    color-scheme: light;
   }
 
-  body {
-    min-width: 320px;
-    min-height: 100vh;
+  html, body, #root {
     margin: 0;
-    background:
-      radial-gradient(circle at top, rgba(56, 189, 248, 0.16), transparent 34%),
-      radial-gradient(circle at bottom right, rgba(14, 165, 233, 0.12), transparent 28%),
-      #f8fafc;
-    color: #0f172a;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
   }
 
-  #root {
-    min-height: 100vh;
+  * {
+    box-sizing: border-box;
+  }
+
+  /* Custom scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.15) transparent;
+  }
+
+  [data-theme="light"] * {
+    scrollbar-color: rgba(0,0,0,0.15) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
     background: transparent;
   }
 
+  *::-webkit-scrollbar-thumb {
+    border-radius: 9999px;
+    background: rgba(255, 255, 255, 0.15);
+  }
+
+  [data-theme="light"] *::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.15);
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.25);
+  }
+
+  [data-theme="light"] *::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.25);
+  }
+
   a {
-    color: inherit;
+    color: var(--color-accent);
     text-decoration: none;
   }
 
-  button,
-  input,
-  textarea,
-  select {
+  a:hover {
+    color: var(--color-accent-hover);
+  }
+
+  button, input, textarea, select {
     font: inherit;
   }
 
   code {
-    border-radius: 0.375rem;
-    border: 1px solid rgba(148, 163, 184, 0.35);
-    background: #f1f5f9;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-tertiary);
     padding: 0.125rem 0.375rem;
-    color: #0f172a;
+    color: var(--color-text-primary);
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.875em;
   }
+}
 
-  * {
-    scrollbar-color: #94a3b8 #e2e8f0;
-  }
+/* ---- 拖曳區域（標題列） ---- */
+.drag-region {
+  -webkit-app-region: drag;
+}
 
-  *::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-  }
+.no-drag {
+  -webkit-app-region: no-drag;
+}
 
-  *::-webkit-scrollbar-track {
-    background: #e2e8f0;
-  }
+/* ---- 面板過渡動畫 ---- */
+.panel-transition {
+  transition: width var(--transition-normal), opacity var(--transition-normal);
+}
 
-  *::-webkit-scrollbar-thumb {
-    border: 2px solid #e2e8f0;
-    border-radius: 9999px;
-    background: #94a3b8;
-  }
-
-  *::-webkit-scrollbar-thumb:hover {
-    background: #64748b;
-  }
+/* ---- 故事文字 ---- */
+.story-text {
+  font-size: var(--font-size-story);
+  line-height: 1.8;
 }

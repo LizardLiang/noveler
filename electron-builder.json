@@ -1,7 +1,17 @@
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
-  "appId": "YourAppID",
+  "appId": "com.noveler.app",
+  "productName": "Noveler",
   "asar": true,
+  "asarUnpack": [
+    "node_modules/sql.js/dist/sql-wasm.wasm"
+  ],
+  "extraResources": [
+    {
+      "from": "node_modules/sql.js/dist/sql-wasm.wasm",
+      "to": "sql-wasm.wasm"
+    }
+  ],
   "directories": {
     "output": "release/${version}"
   },

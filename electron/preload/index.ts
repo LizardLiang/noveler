@@ -1,64 +1,54 @@
-import { ipcRenderer, contextBridge } from 'electron'
+import { ipcRenderer, contextBridge } from 'electron';
 
-// --------- Expose some API to the Renderer process ---------
+// --------- Expose IPC API to the Renderer process ---------
 contextBridge.exposeInMainWorld('ipcRenderer', {
-  on(...args: Parameters<typeof ipcRenderer.on>) {
-    const [channel, listener] = args
-    return ipcRenderer.on(channel, (event, ...args) => listener(event, ...args))
+  on(channel: string, listener: Parameters<typeof ipcRenderer.on>[1]) {
+    ipcRenderer.on(channel, listener);
+    return () => {
+      ipcRenderer.removeListener(channel, listener);
+    };
   },
-  off(...args: Parameters<typeof ipcRenderer.off>) {
-    const [channel, ...omit] = args
-    return ipcRenderer.off(channel, ...omit)
+  off(channel: string, listener: Parameters<typeof ipcRenderer.off>[1]) {
+    return ipcRenderer.off(channel, listener);
   },
-  send(...args: Parameters<typeof ipcRenderer.send>) {
-    const [channel, ...omit] = args
-    return ipcRenderer.send(channel, ...omit)
+  send(channel: string, ...args: unknown[]) {
+    return ipcRenderer.send(channel, ...args);
   },
-  invoke(...args: Parameters<typeof ipcRenderer.invoke>) {
-    const [channel, ...omit] = args
-    return ipcRenderer.invoke(channel, ...omit)
+  invoke(channel: string, ...args: unknown[]) {
+    return ipcRenderer.invoke(channel, ...args);
   },
-
-  // You can expose other APTs you need here.
-  // ...
-})
+});
 
 // --------- Preload scripts loading ---------
 function domReady(condition: DocumentReadyState[] = ['complete', 'interactive']) {
   return new Promise(resolve => {
     if (condition.includes(document.readyState)) {
-      resolve(true)
+      resolve(true);
     } else {
       document.addEventListener('readystatechange', () => {
         if (condition.includes(document.readyState)) {
-          resolve(true)
+          resolve(true);
         }
-      })
+      });
     }
-  })
+  });
 }
 
 const safeDOM = {
   append(parent: HTMLElement, child: HTMLElement) {
     if (!Array.from(parent.children).find(e => e === child)) {
-      return parent.appendChild(child)
+      return parent.appendChild(child);
     }
   },
   remove(parent: HTMLElement, child: HTMLElement) {
     if (Array.from(parent.children).find(e => e === child)) {
-      return parent.removeChild(child)
+      return parent.removeChild(child);
     }
   },
-}
+};
 
-/**
- * https://tobiasahlin.com/spinkit
- * https://connoratherton.com/loaders
- * https://projects.lukehaas.me/css-loaders
- * https://matejkustec.github.io/SpinThatShit
- */
 function useLoading() {
-  const className = `loaders-css__square-spin`
+  const className = `loaders-css__square-spin`;
   const styleContent = `
 @keyframes square-spin {
   25% { transform: perspective(100px) rotateX(180deg) rotateY(0); }
@@ -70,7 +60,7 @@ function useLoading() {
   animation-fill-mode: both;
   width: 50px;
   height: 50px;
-  background: #fff;
+  background: #4f46e5;
   animation: square-spin 3s 0s cubic-bezier(0.09, 0.57, 0.49, 0.9) infinite;
 }
 .app-loading-wrap {
@@ -82,37 +72,35 @@ function useLoading() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #282c34;
+  background: #1a1a2e;
   z-index: 9;
 }
-    `
-  const oStyle = document.createElement('style')
-  const oDiv = document.createElement('div')
+  `;
+  const oStyle = document.createElement('style');
+  const oDiv = document.createElement('div');
 
-  oStyle.id = 'app-loading-style'
-  oStyle.innerHTML = styleContent
-  oDiv.className = 'app-loading-wrap'
-  oDiv.innerHTML = `<div class="${className}"><div></div></div>`
+  oStyle.id = 'app-loading-style';
+  oStyle.innerHTML = styleContent;
+  oDiv.className = 'app-loading-wrap';
+  oDiv.innerHTML = `<div class="${className}"><div></div></div>`;
 
   return {
     appendLoading() {
-      safeDOM.append(document.head, oStyle)
-      safeDOM.append(document.body, oDiv)
+      safeDOM.append(document.head, oStyle);
+      safeDOM.append(document.body, oDiv);
     },
     removeLoading() {
-      safeDOM.remove(document.head, oStyle)
-      safeDOM.remove(document.body, oDiv)
+      safeDOM.remove(document.head, oStyle);
+      safeDOM.remove(document.body, oDiv);
     },
-  }
+  };
 }
 
-// ----------------------------------------------------------------------
+const { appendLoading, removeLoading } = useLoading();
+domReady().then(appendLoading);
 
-const { appendLoading, removeLoading } = useLoading()
-domReady().then(appendLoading)
+window.onmessage = ev => {
+  ev.data.payload === 'removeLoading' && removeLoading();
+};
 
-window.onmessage = (ev) => {
-  ev.data.payload === 'removeLoading' && removeLoading()
-}
-
-setTimeout(removeLoading, 4999)
+setTimeout(removeLoading, 4999);

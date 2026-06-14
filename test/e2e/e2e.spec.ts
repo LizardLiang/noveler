@@ -68,28 +68,19 @@ test.afterAll(async () => {
   }
 })
 
-test.describe('[electron-vite-react] e2e tests', () => {
-  test('startup', async () => {
+test.describe('[noveler] e2e smoke tests', () => {
+  test('startup — window title is Noveler', async () => {
     const title = await page.title()
-    expect(title).toBe('Electron + Vite + React')
+    expect(title).toBe('Noveler')
   })
 
-  test('should be home page is load correctly', async () => {
-    const h1 = await page.$('h1')
-    const title = await h1?.textContent()
-    expect(title).toBe('A sharp starter with Tailwind-first styling.')
-  })
-
-  test('should be count button can click', async () => {
-    const countButton = await page.$('button:has-text("Increment counter")')
-    const countValue = await page.$('div.text-5xl')
-
-    const valueBeforeClick = await countValue?.textContent()
-    expect(valueBeforeClick).toBe('0')
-
-    await countButton?.click()
-
-    const valueAfterClick = await countValue?.textContent()
-    expect(valueAfterClick).toBe('1')
+  test('startup — app renders without blank screen', async () => {
+    // The app should show either the project list page or the onboarding wizard.
+    // Wait for any content to be visible.
+    await page.waitForSelector('#root > *', { timeout: 10000 })
+    const root = await page.$('#root')
+    const text = await root?.textContent()
+    // Root should have some content rendered
+    expect(text).toBeTruthy()
   })
 })

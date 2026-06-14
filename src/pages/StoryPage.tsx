@@ -11,7 +11,9 @@ import { ParagraphBlock } from '@/components/story/ParagraphBlock';
 import { ContextBudgetIndicator } from '@/components/story/ContextBudgetIndicator';
 import { StorySuggestions } from '@/components/story/StorySuggestions';
 import { SystemPromptEditor } from '@/components/settings/SystemPromptEditor';
+import { WorldRulesEditor } from '@/components/settings/WorldRulesEditor';
 import { WritingStyleConfig } from '@/components/settings/WritingStyleConfig';
+import { DialogueEditorConfig } from '@/components/settings/DialogueEditorConfig';
 import { GlobalSearch } from '@/components/search/GlobalSearch';
 import { StoryStats } from '@/components/stats/StoryStats';
 import { zhTW } from '@/i18n/zh-TW';
@@ -40,6 +42,13 @@ export function StoryPage() {
     setSuggestions,
     setSuggestionsLoading,
     clearSuggestions,
+    refiningParagraphId,
+    refinedParagraphIds,
+    refineUnavailableNotify,
+    setRefineUnavailableNotify,
+    generationError,
+    setGenerationError,
+    reasoningByParagraph,
     reset: resetStory,
   } = useStoryStore();
   const { providers, setProviders } = useSettingsStore();
@@ -439,6 +448,60 @@ export function StoryPage() {
         {/* Context budget indicator */}
         <ContextBudgetIndicator budget={contextBudget} />
 
+        {/* AC-019: Context truncation warning — compact icon */}
+        {truncationWarning && (
+          <button
+            onClick={() => setTruncationWarning(null)}
+            title={`${zhTW.paragraph.contextTruncated.replace('{count}', String(truncationWarning.count))}（${zhTW.paragraph.contextTruncatedDismiss}）`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 24,
+              height: 24,
+              flexShrink: 0,
+              background: 'transparent',
+              border: 'none',
+              borderRadius: 'var(--radius-sm)',
+              color: 'var(--color-warning)',
+              cursor: 'pointer',
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 1.5 15 14H1z" />
+              <line x1="8" y1="6" x2="8" y2="9.5" />
+              <circle cx="8" cy="11.5" r="0.5" fill="currentColor" />
+            </svg>
+          </button>
+        )}
+
+        {/* FR-D012 / W3: Dialogue refine unavailable — subtle dismissible icon */}
+        {refineUnavailableNotify && (
+          <button
+            onClick={() => setRefineUnavailableNotify(false)}
+            title={`${zhTW.dialogueEditor.refineUnavailable}（點擊關閉）`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 24,
+              height: 24,
+              flexShrink: 0,
+              background: 'transparent',
+              border: 'none',
+              borderRadius: 'var(--radius-sm)',
+              color: 'var(--color-text-tertiary)',
+              cursor: 'pointer',
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="8" cy="8" r="6" />
+              <line x1="8" y1="5" x2="8" y2="8.5" />
+              <circle cx="8" cy="10.5" r="0.5" fill="currentColor" />
+            </svg>
+          </button>
+        )}
+
         {/* Search toggle */}
         <button
           onClick={() => setShowSearch(v => !v)}
@@ -535,40 +598,6 @@ export function StoryPage() {
           </button>
         )}
       </div>
-
-      {/* AC-019: Context truncation warning bar */}
-      {truncationWarning && (
-        <div
-          style={{
-            padding: '8px 24px',
-            background: 'rgba(245, 166, 35, 0.1)',
-            borderBottom: '1px solid rgba(245, 166, 35, 0.3)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            flexShrink: 0,
-          }}
-        >
-          <span style={{ fontSize: 13, color: 'var(--color-warning)', flex: 1 }}>
-            {zhTW.paragraph.contextTruncated.replace('{count}', String(truncationWarning.count))}
-          </span>
-          <button
-            onClick={() => setTruncationWarning(null)}
-            style={{
-              background: 'transparent',
-              border: '1px solid rgba(245, 166, 35, 0.4)',
-              color: 'var(--color-warning)',
-              cursor: 'pointer',
-              padding: '2px 10px',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: 12,
-              flexShrink: 0,
-            }}
-          >
-            {zhTW.paragraph.contextTruncatedDismiss}
-          </button>
-        </div>
-      )}
 
       {/* AC-003: Cascade delete dialog */}
       {cascadeDialog && (
@@ -715,8 +744,10 @@ export function StoryPage() {
             boxSizing: 'border-box',
           }}
         >
+          <WorldRulesEditor projectId={projectId} />
           <SystemPromptEditor projectId={projectId} />
           <WritingStyleConfig projectId={projectId} />
+          <DialogueEditorConfig projectId={projectId} />
         </div>
       )}
 
@@ -779,6 +810,8 @@ export function StoryPage() {
           {/* Paragraph blocks */}
           {paragraphs.map(para => {
             const isStreamingThis = streaming?.paragraphId === para.id && isGenerating;
+            const isRefiningThis = refiningParagraphId === para.id;
+            const isRefinedThis = refinedParagraphIds.has(para.id);
             const content = paragraphContents.get(para.id) ?? '';
             return (
               <div key={para.id} id={`paragraph-${para.id}`}>
@@ -786,7 +819,10 @@ export function StoryPage() {
                   paragraph={para}
                   content={content}
                   streamingContent={isStreamingThis ? streaming.content : undefined}
+                  thinking={reasoningByParagraph.get(para.id)}
                   isStreaming={isStreamingThis}
+                  isRefining={isRefiningThis}
+                  isRefined={isRefinedThis}
                   onDelete={handleDelete}
                   onRegenerate={para.type === 'ai' ? handleRegenerate : undefined}
                   onRollback={handleRollback}
@@ -852,6 +888,50 @@ export function StoryPage() {
           <div style={{ height: 16 }} />
         </div>
       </div>
+
+      {/* Generation error banner — surfaces failures that would otherwise be a silent empty paragraph */}
+      {generationError && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 10,
+            margin: '0 16px 8px',
+            padding: '10px 14px',
+            background: 'rgba(229, 83, 83, 0.1)',
+            border: '1px solid var(--color-error)',
+            borderRadius: 'var(--radius-md)',
+            color: 'var(--color-error)',
+            fontSize: 13,
+            lineHeight: 1.5,
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}>
+            <circle cx="8" cy="8" r="6" />
+            <line x1="8" y1="5" x2="8" y2="8.5" />
+            <circle cx="8" cy="10.5" r="0.5" fill="currentColor" />
+          </svg>
+          <span style={{ flex: 1, wordBreak: 'break-word' }}>{zhTW.chat.generationFailed}{generationError}</span>
+          <button
+            onClick={() => setGenerationError(null)}
+            title="關閉"
+            style={{
+              flexShrink: 0,
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--color-error)',
+              cursor: 'pointer',
+              padding: 0,
+              display: 'flex',
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <line x1="3" y1="3" x2="11" y2="11" />
+              <line x1="11" y1="3" x2="3" y2="11" />
+            </svg>
+          </button>
+        </div>
+      )}
 
       {/* Chat input */}
       <ChatInput
