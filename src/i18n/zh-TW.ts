@@ -113,6 +113,19 @@ export const zhTW = {
     eventStatus: '狀態',
     eventStatusOccurred: '已發生',
     eventStatusPlanned: '規劃中',
+    // Planning horizon (for planned events)
+    eventHorizon: '時程',
+    horizonShort: '短期',
+    horizonMid: '中期',
+    horizonLong: '長期',
+    horizonShortHint: '短期（接下來幾段就要推進、實際演出）',
+    horizonMidHint: '中期（本章／本卷的走向，可鋪陳伏筆）',
+    horizonLongHint: '長期（最終目標，方向一致即可）',
+    plannedRoadmap: '劇情規劃',
+    occurredHistory: '已發生事件',
+    moveUp: '上移',
+    moveDown: '下移',
+    noPlannedEvents: '尚無規劃事件',
     // Suggestions
     suggestionTitle: '偵測到世界變更',
     suggestionAccept: '接受',
@@ -206,6 +219,17 @@ export const zhTW = {
     modeSingle: '單次模式（快速）',
     modeTwoPass: '雙次模式（精細）',
     refineUnavailable: '對話潤飾暫時無法使用 — 已保留原文',
+  },
+  narrationEditor: {
+    title: '敘述潤飾',
+    enable: '啟用敘述潤飾',
+    modeSingle: '單次模式（快速）',
+    modeTwoPass: '雙次模式（精細）',
+  },
+  plotCompliance: {
+    title: '劇情推進',
+    enable: '生成後自動檢查劇情目標',
+    hint: '生成段落後檢查是否已實現「短期」劇情目標；若實現，自動標記為已發生並把下一個目標往前遞補。',
   },
   autosave: {
     saving: '儲存中...',

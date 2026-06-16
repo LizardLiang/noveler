@@ -63,6 +63,9 @@ export const IPC_CHANNELS = {
   WORLD_MEMORY_IMPORT_EVENTS: 'worldMemory:importEvents',
   WORLD_MEMORY_IMPORT_EVENTS_TEXT: 'worldMemory:importEventsText',
 
+  // 世界記憶變更通知（主程序 → 渲染程序）— 例如劇情自動推進後刷新事件清單
+  WORLD_MEMORY_EVENTS_CHANGED: 'worldMemory:eventsChanged',
+
   // 分支管理
   BRANCH_CREATE: 'branch:create',
   BRANCH_SWITCH: 'branch:switch',

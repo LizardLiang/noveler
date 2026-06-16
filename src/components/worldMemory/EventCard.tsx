@@ -1,6 +1,12 @@
 import { useState } from 'react';
-import type { StoryEvent } from '@/types/models';
+import type { StoryEvent, EventHorizon } from '@/types/models';
 import { zhTW } from '@/i18n/zh-TW';
+
+const HORIZON_LABEL: Record<EventHorizon, string> = {
+  short: zhTW.worldMemory.horizonShort,
+  mid: zhTW.worldMemory.horizonMid,
+  long: zhTW.worldMemory.horizonLong,
+};
 
 interface EventCardProps {
   event: StoryEvent;
@@ -13,25 +19,32 @@ interface EventCardProps {
       impact?: string;
       participatingCharacters?: string[];
       status?: 'occurred' | 'planned';
+      horizon?: EventHorizon;
+      orderInHorizon?: number;
     },
   ) => void;
   onDelete: (id: string) => void;
+  onMoveUp?: (id: string) => void;
+  onMoveDown?: (id: string) => void;
+  canMoveUp?: boolean;
+  canMoveDown?: boolean;
 }
 
-export function EventCard({ event, onUpdate, onDelete }: EventCardProps) {
+export function EventCard({ event, onUpdate, onDelete, onMoveUp, onMoveDown, canMoveUp, canMoveDown }: EventCardProps) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(event.name);
   const [desc, setDesc] = useState(event.description);
   const [time, setTime] = useState(event.storyTimestamp);
   const [impact, setImpact] = useState(event.impact);
   const [status, setStatus] = useState<'occurred' | 'planned'>(event.status);
+  const [horizon, setHorizon] = useState<EventHorizon>(event.horizon);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [hovered, setHovered] = useState(false);
 
   const isPlanned = event.status === 'planned';
 
   const handleSave = () => {
-    onUpdate(event.id, { name, description: desc, storyTimestamp: time, impact, status });
+    onUpdate(event.id, { name, description: desc, storyTimestamp: time, impact, status, horizon });
     setEditing(false);
   };
 
@@ -153,6 +166,32 @@ export function EventCard({ event, onUpdate, onDelete }: EventCardProps) {
                 ))}
               </div>
             </div>
+            {status === 'planned' && (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-tertiary)', marginBottom: 4, letterSpacing: '0.5px' }}>{zhTW.worldMemory.eventHorizon}</div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {(['short', 'mid', 'long'] as const).map((h) => (
+                    <button
+                      key={h}
+                      onClick={() => setHorizon(h)}
+                      style={{
+                        flex: 1,
+                        fontSize: 12,
+                        padding: '6px 10px',
+                        borderRadius: 'var(--radius-sm)',
+                        cursor: 'pointer',
+                        border: `1px solid ${horizon === h ? 'var(--color-accent)' : 'var(--color-border)'}`,
+                        background: horizon === h ? 'var(--color-accent-subtle)' : 'transparent',
+                        color: horizon === h ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+                        fontWeight: horizon === h ? 600 : 400,
+                      }}
+                    >
+                      {HORIZON_LABEL[h]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button
                 onClick={() => setEditing(false)}
@@ -199,13 +238,20 @@ export function EventCard({ event, onUpdate, onDelete }: EventCardProps) {
                       fontWeight: 600,
                       padding: '1px 7px',
                       borderRadius: 10,
-                      background: 'transparent',
-                      border: '1px dashed var(--color-text-tertiary)',
-                      color: 'var(--color-text-tertiary)',
+                      background: 'var(--color-accent-subtle)',
+                      border: '1px solid var(--color-accent)',
+                      color: 'var(--color-accent)',
                       letterSpacing: '0.5px',
                     }}
+                    title={
+                      event.horizon === 'short'
+                        ? zhTW.worldMemory.horizonShortHint
+                        : event.horizon === 'mid'
+                          ? zhTW.worldMemory.horizonMidHint
+                          : zhTW.worldMemory.horizonLongHint
+                    }
                   >
-                    {zhTW.worldMemory.eventStatusPlanned}
+                    {HORIZON_LABEL[event.horizon]}
                   </span>
                 )}
               </div>
@@ -247,6 +293,30 @@ export function EventCard({ event, onUpdate, onDelete }: EventCardProps) {
 
             {/* Actions */}
             <div style={{ display: 'flex', gap: 4, flexShrink: 0, opacity: hovered ? 1 : 0, transition: 'opacity 0.15s' }}>
+              {isPlanned && onMoveUp && (
+                <button
+                  onClick={() => onMoveUp(event.id)}
+                  disabled={!canMoveUp}
+                  style={{ background: 'transparent', border: 'none', cursor: canMoveUp ? 'pointer' : 'default', color: 'var(--color-text-tertiary)', padding: 4, opacity: canMoveUp ? 1 : 0.3 }}
+                  title={zhTW.worldMemory.moveUp}
+                >
+                  <svg width="13" height="13" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M6 9.5V3M3 5.5L6 2.5l3 3" />
+                  </svg>
+                </button>
+              )}
+              {isPlanned && onMoveDown && (
+                <button
+                  onClick={() => onMoveDown(event.id)}
+                  disabled={!canMoveDown}
+                  style={{ background: 'transparent', border: 'none', cursor: canMoveDown ? 'pointer' : 'default', color: 'var(--color-text-tertiary)', padding: 4, opacity: canMoveDown ? 1 : 0.3 }}
+                  title={zhTW.worldMemory.moveDown}
+                >
+                  <svg width="13" height="13" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M6 2.5V9M3 6.5L6 9.5l3-3" />
+                  </svg>
+                </button>
+              )}
               <button
                 onClick={toggleStatus}
                 style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: isPlanned ? 'var(--color-accent)' : 'var(--color-text-tertiary)', padding: 4 }}

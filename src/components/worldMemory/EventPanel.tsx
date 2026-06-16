@@ -3,7 +3,31 @@ import { useWorldMemoryStore } from '@/stores/worldMemoryStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useStoryStore } from '@/stores/storyStore';
 import { EventCard } from './EventCard';
+import { ipcOn } from '@/lib/ipc';
 import { zhTW } from '@/i18n/zh-TW';
+import type { StoryEvent, EventHorizon } from '@/types/models';
+
+// Main → renderer notification fired after the plot-compliance pass advances the
+// horizon queue (keep in sync with IPC_CHANNELS.WORLD_MEMORY_EVENTS_CHANGED).
+const EVENTS_CHANGED_CHANNEL = 'worldMemory:eventsChanged';
+
+const HORIZON_ORDER: EventHorizon[] = ['short', 'mid', 'long'];
+const HORIZON_LABEL: Record<EventHorizon, string> = {
+  short: zhTW.worldMemory.horizonShort,
+  mid: zhTW.worldMemory.horizonMid,
+  long: zhTW.worldMemory.horizonLong,
+};
+const HORIZON_HINT: Record<EventHorizon, string> = {
+  short: zhTW.worldMemory.horizonShortHint,
+  mid: zhTW.worldMemory.horizonMidHint,
+  long: zhTW.worldMemory.horizonLongHint,
+};
+
+function sortByOrder(a: StoryEvent, b: StoryEvent): number {
+  return a.orderInHorizon !== b.orderInHorizon
+    ? a.orderInHorizon - b.orderInHorizon
+    : a.createdAt.localeCompare(b.createdAt);
+}
 
 const dropdownItemStyle: React.CSSProperties = {
   display: 'block',
@@ -39,6 +63,7 @@ export function EventPanel() {
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newStatus, setNewStatus] = useState<'occurred' | 'planned'>('occurred');
+  const [newHorizon, setNewHorizon] = useState<EventHorizon>('mid');
   const [showImportMenu, setShowImportMenu] = useState(false);
   const [showPasteModal, setShowPasteModal] = useState(false);
   const [pasteText, setPasteText] = useState('');
@@ -55,6 +80,21 @@ export function EventPanel() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, branchId]);
 
+  // Reload after the plot-compliance pass auto-advances the horizon queue.
+  useEffect(() => {
+    if (!projectId || !branchId) return;
+    const dispose = ipcOn<{ projectId: string; branchId: string }>(
+      EVENTS_CHANGED_CHANNEL,
+      (_e, data) => {
+        if (data?.projectId === projectId && data?.branchId === branchId) {
+          loadEvents(projectId, branchId).catch(() => { /* silent */ });
+        }
+      },
+    );
+    return dispose;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, branchId]);
+
   useEffect(() => {
     if (!showImportMenu) return;
     const handle = (e: MouseEvent) => {
@@ -66,26 +106,45 @@ export function EventPanel() {
     return () => document.removeEventListener('mousedown', handle);
   }, [showImportMenu]);
 
-  const filteredEvents = filterCharName
-    ? events.filter((e) =>
-        e.participatingCharacters.some((n) =>
-          n.toLowerCase().includes(filterCharName.toLowerCase()),
-        ),
-      )
-    : events;
+  const matchesFilter = useCallback(
+    (e: StoryEvent) =>
+      !filterCharName ||
+      e.participatingCharacters.some((n) =>
+        n.toLowerCase().includes(filterCharName.toLowerCase()),
+      ),
+    [filterCharName],
+  );
+
+  const filteredEvents = events.filter(matchesFilter);
+
+  // Planned events grouped by horizon (sorted), and occurred history (newest first).
+  const plannedByHorizon = (h: EventHorizon): StoryEvent[] =>
+    filteredEvents.filter((e) => e.status === 'planned' && e.horizon === h).sort(sortByOrder);
+  const occurredEvents = filteredEvents.filter((e) => e.status !== 'planned');
+  const plannedCount = filteredEvents.filter((e) => e.status === 'planned').length;
 
   const handleAdd = useCallback(async () => {
     if (!projectId || !branchId || !newName) return;
+    // Place a new planned event at the end of its horizon bucket.
+    const orderInHorizon =
+      newStatus === 'planned'
+        ? events
+            .filter((e) => e.status === 'planned' && e.horizon === newHorizon)
+            .reduce((max, e) => Math.max(max, e.orderInHorizon + 1), 0)
+        : 0;
     await createEvent(projectId, branchId, {
       name: newName,
       description: newDesc,
       status: newStatus,
+      horizon: newHorizon,
+      orderInHorizon,
     });
     setShowAddForm(false);
     setNewName('');
     setNewDesc('');
     setNewStatus('occurred');
-  }, [projectId, branchId, newName, newDesc, newStatus, createEvent]);
+    setNewHorizon('mid');
+  }, [projectId, branchId, newName, newDesc, newStatus, newHorizon, events, createEvent]);
 
   const handleUpdate = useCallback(
     async (
@@ -97,12 +156,40 @@ export function EventPanel() {
         impact?: string;
         participatingCharacters?: string[];
         status?: 'occurred' | 'planned';
+        horizon?: EventHorizon;
+        orderInHorizon?: number;
       },
     ) => {
       if (!projectId) return;
       await updateEventRemote(projectId, id, updates);
     },
     [projectId, updateEventRemote],
+  );
+
+  // Move a planned event up/down within its horizon bucket by reindexing siblings.
+  const handleReorder = useCallback(
+    async (id: string, direction: 'up' | 'down') => {
+      if (!projectId) return;
+      const target = events.find((e) => e.id === id);
+      if (!target || target.status !== 'planned') return;
+      const siblings = events
+        .filter((e) => e.status === 'planned' && e.horizon === target.horizon)
+        .sort(sortByOrder);
+      const idx = siblings.findIndex((e) => e.id === id);
+      const swapWith = direction === 'up' ? idx - 1 : idx + 1;
+      if (swapWith < 0 || swapWith >= siblings.length) return;
+      const arr = [...siblings];
+      [arr[idx], arr[swapWith]] = [arr[swapWith], arr[idx]];
+      // Reassign sequential order indices (cheap; buckets are small).
+      await Promise.all(
+        arr.map((e, i) =>
+          e.orderInHorizon === i
+            ? Promise.resolve()
+            : updateEventRemote(projectId, e.id, { orderInHorizon: i }),
+        ),
+      );
+    },
+    [projectId, events, updateEventRemote],
   );
 
   const handleDelete = useCallback(
@@ -342,6 +429,30 @@ export function EventPanel() {
               </button>
             ))}
           </div>
+          {newStatus === 'planned' && (
+            <div style={{ display: 'flex', gap: 6 }}>
+              {HORIZON_ORDER.map((h) => (
+                <button
+                  key={h}
+                  onClick={() => setNewHorizon(h)}
+                  title={HORIZON_HINT[h]}
+                  style={{
+                    flex: 1,
+                    fontSize: 12,
+                    padding: '6px 10px',
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                    border: `1px solid ${newHorizon === h ? 'var(--color-accent)' : 'var(--color-border)'}`,
+                    background: newHorizon === h ? 'var(--color-accent-subtle)' : 'transparent',
+                    color: newHorizon === h ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+                    fontWeight: newHorizon === h ? 600 : 400,
+                  }}
+                >
+                  {HORIZON_LABEL[h]}
+                </button>
+              ))}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button
               onClick={() => setShowAddForm(false)}
@@ -383,7 +494,7 @@ export function EventPanel() {
         {filteredEvents.length} {zhTW.worldMemory.events}
       </div>
 
-      {/* Timeline list */}
+      {/* Sectioned board: planned (by horizon) + occurred history */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '0 12px 12px' }}>
         {isLoading ? (
           <div style={{ textAlign: 'center', color: 'var(--color-text-tertiary)', padding: 24, fontSize: 13 }}>載入中...</div>
@@ -392,14 +503,63 @@ export function EventPanel() {
             {zhTW.worldMemory.noEvents}
           </div>
         ) : (
-          filteredEvents.map((e) => (
-            <EventCard
-              key={e.id}
-              event={e}
-              onUpdate={handleUpdate}
-              onDelete={handleDelete}
-            />
-          ))
+          <>
+            {/* Planned roadmap — three horizon sections */}
+            <SectionHeader label={zhTW.worldMemory.plannedRoadmap} />
+            {plannedCount === 0 ? (
+              <div style={{ color: 'var(--color-text-tertiary)', padding: '4px 6px 12px', fontSize: 12 }}>
+                {zhTW.worldMemory.noPlannedEvents}
+              </div>
+            ) : (
+              HORIZON_ORDER.map((h) => {
+                const bucket = plannedByHorizon(h);
+                if (bucket.length === 0) return null;
+                return (
+                  <div key={h} style={{ marginBottom: 6 }}>
+                    <div
+                      title={HORIZON_HINT[h]}
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: 'var(--color-accent)',
+                        padding: '6px 6px 4px',
+                        letterSpacing: '0.5px',
+                      }}
+                    >
+                      {HORIZON_LABEL[h]}　<span style={{ color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{HORIZON_HINT[h]}</span>
+                    </div>
+                    {bucket.map((e, i) => (
+                      <EventCard
+                        key={e.id}
+                        event={e}
+                        onUpdate={handleUpdate}
+                        onDelete={handleDelete}
+                        onMoveUp={(id) => handleReorder(id, 'up')}
+                        onMoveDown={(id) => handleReorder(id, 'down')}
+                        canMoveUp={i > 0}
+                        canMoveDown={i < bucket.length - 1}
+                      />
+                    ))}
+                  </div>
+                );
+              })
+            )}
+
+            {/* Occurred history */}
+            {occurredEvents.length > 0 && (
+              <>
+                <SectionHeader label={zhTW.worldMemory.occurredHistory} />
+                {occurredEvents.map((e) => (
+                  <EventCard
+                    key={e.id}
+                    event={e}
+                    onUpdate={handleUpdate}
+                    onDelete={handleDelete}
+                  />
+                ))}
+              </>
+            )}
+          </>
         )}
       </div>
 
@@ -500,6 +660,24 @@ export function EventPanel() {
         .clear-all-btn:not(:disabled):hover { background: rgba(229,83,83,0.1) !important; border-color: var(--color-error) !important; color: var(--color-error) !important; }
         .clear-all-btn:not(:disabled):active { transform: scale(0.92); }
       `}</style>
+    </div>
+  );
+}
+
+function SectionHeader({ label }: { label: string }) {
+  return (
+    <div
+      style={{
+        fontSize: 12,
+        fontWeight: 700,
+        color: 'var(--color-text-secondary)',
+        padding: '10px 6px 6px',
+        borderBottom: '1px solid var(--color-border)',
+        marginBottom: 8,
+        letterSpacing: '0.5px',
+      }}
+    >
+      {label}
     </div>
   );
 }

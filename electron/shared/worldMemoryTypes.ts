@@ -48,7 +48,14 @@ export interface StoryEvent {
   impact: string;
   participatingCharacters: string[];
   status: 'occurred' | 'planned';
+  // Planning horizon for planned events (ignored for occurred events):
+  // 'short' = next few paragraphs, 'mid' = this chapter/arc, 'long' = eventual goal.
+  horizon: 'short' | 'mid' | 'long';
+  // Manual ordering within a horizon bucket (lower = sooner).
+  orderInHorizon: number;
   paragraphId: string | null;
   createdAt: string;
   updatedAt: string;
 }
+
+export type EventHorizon = StoryEvent['horizon'];

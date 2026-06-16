@@ -206,6 +206,8 @@ CREATE TABLE IF NOT EXISTS events (
     impact          TEXT DEFAULT '',
     participating_characters TEXT DEFAULT '[]',
     status          TEXT NOT NULL DEFAULT 'occurred',
+    horizon         TEXT NOT NULL DEFAULT 'mid',
+    order_in_horizon INTEGER NOT NULL DEFAULT 0,
     paragraph_id    TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
@@ -269,7 +271,8 @@ INSERT OR IGNORE INTO project_settings (key, value) VALUES
     ('system_prompt', '""'),
     ('writing_style', '{"perspective":"third_person","tone":"neutral","detail_level":"moderate"}'),
     ('context_budget', '{"system":10,"worldMemory":20,"storyHistory":60,"userInput":10}'),
-    ('auto_detect_enabled', 'true');
+    ('auto_detect_enabled', 'true'),
+    ('plot_compliance_enabled', 'true');
 `;
 
 // ============================================================
@@ -399,6 +402,34 @@ function migrateProjectDatabase(db: ProjectDatabase): void {
     }
   } catch {
     // Table may not exist yet (first run) — schema DDL creates it with the column
+  }
+
+  try {
+    const horizonCols = db.prepare(
+      "SELECT name FROM pragma_table_info('events') WHERE name='horizon'",
+    ).all();
+    if (horizonCols.length === 0) {
+      db.exec("ALTER TABLE events ADD COLUMN horizon TEXT NOT NULL DEFAULT 'mid'");
+    }
+  } catch {
+    // Table may not exist yet (first run) — schema DDL creates it with the column
+  }
+
+  try {
+    const orderCols = db.prepare(
+      "SELECT name FROM pragma_table_info('events') WHERE name='order_in_horizon'",
+    ).all();
+    if (orderCols.length === 0) {
+      db.exec("ALTER TABLE events ADD COLUMN order_in_horizon INTEGER NOT NULL DEFAULT 0");
+    }
+  } catch {
+    // Table may not exist yet (first run) — schema DDL creates it with the column
+  }
+
+  try {
+    db.exec("INSERT OR IGNORE INTO project_settings (key, value) VALUES ('plot_compliance_enabled', 'true')");
+  } catch {
+    // project_settings may not exist yet (first run) — schema DDL seeds it
   }
 }
 

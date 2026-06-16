@@ -506,6 +506,7 @@ export {
   buildCritiqueSystemPrompt,
   buildRewriteSystemPrompt,
   buildRosterSection,
+  callLLM,
   RUBRIC,
   BAN_LIST,
   REWRITE_RULES,

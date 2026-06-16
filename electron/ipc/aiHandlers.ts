@@ -15,13 +15,16 @@ import type { OAuthTokens } from '../shared/types.js';
 import { getProjectStoragePath, getOpenProject } from './projectHandlers.js';
 import { refineDialogue, containsDialogue, getDialogueEditorSettings } from '../main/services/DialogueEditorService.js';
 import type { CharacterForRoster, DialogueEditorSettings } from '../main/services/DialogueEditorService.js';
+import { refineNarration, containsNarration, getNarrationEditorSettings } from '../main/services/NarrationEditorService.js';
+import type { NarrationEditorSettings } from '../main/services/NarrationEditorService.js';
+import { checkFulfillment, getPlotComplianceEnabled } from '../main/services/PlotComplianceService.js';
 import {
   WORLD_MEMORY_TOOLS,
   executeWorldMemoryQuery,
   buildWorldDirectory,
 } from '../main/services/WorldMemoryTools.js';
 import type { QueryWorldMemoryArgs } from '../main/services/WorldMemoryTools.js';
-import { applyWorldChange } from './worldMemoryHandlers.js';
+import { applyWorldChange, applyPlotFulfillment } from './worldMemoryHandlers.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import type { IpcResult } from '../shared/types.js';
 import type { GenerateRequest, StreamCompletePayload, ContextBudgetPayload, SuggestionsRequest, SuggestionsResponse } from '../shared/types.js';
@@ -395,6 +398,145 @@ async function runDialoguePass(
   return { adoptedText, refineFailedNotify };
 }
 
+/**
+ * Narration-editor pass — the inverse of runDialoguePass. Refines the prose
+ * OUTSIDE quotes while leaving dialogue verbatim. Shares the dialogue-pass
+ * timeout budget and the generation-token write guard (FR-D013). Emits
+ * narration_refining indicator chunks and narration_refine_failed on failure.
+ *
+ * Returns the text to write (refined if adopted, original otherwise) and a flag
+ * indicating whether a failure notification should be surfaced to the renderer.
+ */
+async function runNarrationPass(
+  event: IpcMainInvokeEvent,
+  paragraphId: string,
+  storyText: string,
+  settings: NarrationEditorSettings,
+  aiService: ReturnType<typeof getAIProviderService>,
+  providerConfig: { apiKey: string; baseUrl: string; defaultModel: string; authMethod?: 'api_key' | 'oauth'; accountId?: string; isOllama?: boolean },
+  model: string,
+  projectId: string,
+  myToken: number,
+): Promise<{ adoptedText: string; refineFailedNotify: boolean }> {
+  const isSlowPath = providerConfig.isOllama || providerConfig.authMethod === 'oauth';
+  const refineTimeoutMs = isSlowPath ? DIALOGUE_REFINE_TIMEOUT_MS_LOCAL : DIALOGUE_REFINE_TIMEOUT_MS;
+  const passController = new AbortController();
+  const passTimer = setTimeout(() => passController.abort(), refineTimeoutMs);
+
+  let adoptedText = storyText;
+  let refineFailedNotify = false;
+
+  try {
+    event.sender.send(IPC_CHANNELS.STREAM_CHUNK, {
+      paragraphId,
+      delta: '',
+      done: false,
+      type: 'narration_refining',
+      meta: { refining: true },
+    });
+
+    const refined = await refineNarration({
+      aiService,
+      providerConfig,
+      model,
+      storyText,
+      mode: settings.mode,
+      signal: passController.signal,
+    });
+
+    // Generation-token write guard — synchronous read immediately before the
+    // conditional assignment, no await in between (FR-D013).
+    const stillCurrent = generationTokens.get(projectId) === myToken;
+    if (refined && stillCurrent) {
+      adoptedText = refined;
+    } else if (refined === null) {
+      refineFailedNotify = true;
+    }
+  } finally {
+    clearTimeout(passTimer);
+    event.sender.send(IPC_CHANNELS.STREAM_CHUNK, {
+      paragraphId,
+      delta: '',
+      done: false,
+      type: 'narration_refining',
+      meta: { refining: false },
+    });
+    if (refineFailedNotify) {
+      event.sender.send(IPC_CHANNELS.STREAM_CHUNK, {
+        paragraphId,
+        delta: '',
+        done: false,
+        type: 'narration_refine_failed',
+        meta: {},
+      });
+    }
+  }
+
+  return { adoptedText, refineFailedNotify };
+}
+
+// Plot-compliance fulfillment check shares the dialogue-pass timeout budget:
+// slow paths (local + OAuth reasoning models) get the longer cap.
+async function runPlotCompliancePass(
+  event: IpcMainInvokeEvent,
+  aiParagraphId: string,
+  storyText: string,
+  worldMemoryService: ReturnType<typeof getWorldMemoryService>,
+  projectDb: ReturnType<typeof getOpenProject>,
+  projectId: string,
+  branchId: string,
+  aiService: ReturnType<typeof getAIProviderService>,
+  providerConfig: { apiKey: string; baseUrl: string; defaultModel: string; authMethod?: 'api_key' | 'oauth'; accountId?: string; isOllama?: boolean },
+  model: string,
+  myToken: number,
+): Promise<void> {
+  if (!projectDb) return;
+
+  // Only the short-term planned events were actively steered — bound the check to them.
+  const shortEvents = worldMemoryService
+    .listEvents(projectDb, projectId, branchId)
+    .filter(e => e.status === 'planned' && e.horizon === 'short')
+    .map(e => ({ id: e.id, name: e.name, description: e.description }));
+  if (shortEvents.length === 0) return;
+
+  const isSlowPath = providerConfig.isOllama || providerConfig.authMethod === 'oauth';
+  const timeoutMs = isSlowPath ? DIALOGUE_REFINE_TIMEOUT_MS_LOCAL : DIALOGUE_REFINE_TIMEOUT_MS;
+  const passController = new AbortController();
+  const passTimer = setTimeout(() => passController.abort(), timeoutMs);
+
+  try {
+    const { fulfilledIds } = await checkFulfillment({
+      aiService,
+      providerConfig,
+      model,
+      storyText,
+      shortEvents,
+      signal: passController.signal,
+    });
+
+    // Generation-token guard — don't mutate the plot queue if this generation was
+    // superseded or cancelled. Synchronous read immediately before the write.
+    const stillCurrent = generationTokens.get(projectId) === myToken;
+    if (fulfilledIds.length === 0 || !stillCurrent) return;
+
+    const changed = applyPlotFulfillment(
+      worldMemoryService,
+      projectDb,
+      projectId,
+      branchId,
+      aiParagraphId,
+      fulfilledIds,
+    );
+    if (changed) {
+      event.sender.send(IPC_CHANNELS.WORLD_MEMORY_EVENTS_CHANGED, { projectId, branchId });
+    }
+  } catch (err) {
+    console.error('[plot-compliance] pass failed:', err);
+  } finally {
+    clearTimeout(passTimer);
+  }
+}
+
 export function registerAIHandlers(): void {
   const aiService = getAIProviderService();
   const contextManager = getContextManager();
@@ -483,6 +625,13 @@ export function registerAIHandlers(): void {
           worldMemoryService, projectDb, req.projectId, effectiveBranchId,
         );
 
+        // Build horizon-weighted plot steering (independent of tool use) so the
+        // story complies with planned events: long-term in the system prompt,
+        // near-term in the recency slot before the user turn.
+        const plotSteering = worldMemoryService.buildPlotSteering(
+          projectDb, req.projectId, effectiveBranchId,
+        );
+
         // Extract recent text for smart world memory filtering (fallback)
         const recentText = historyContext
           .slice(-6)
@@ -510,6 +659,8 @@ export function registerAIHandlers(): void {
           worldMemorySummary: useTools ? '' : worldMemorySummary,
           storyHistory: historyContext,
           userInput: req.userMessage,
+          plotLongGoals: plotSteering.longGoals,
+          plotNearTerm: plotSteering.nearTermDirective,
         });
 
         // Create AI paragraph (placeholder, will be updated on stream end)
@@ -598,6 +749,8 @@ export function registerAIHandlers(): void {
               worldMemorySummary,
               storyHistory: historyContext,
               userInput: req.userMessage,
+              plotLongGoals: plotSteering.longGoals,
+              plotNearTerm: plotSteering.nearTermDirective,
             });
             finalMessages = fallbackAssembled.messages;
           }
@@ -712,8 +865,29 @@ export function registerAIHandlers(): void {
           }
         }
 
+        // Refinement passes — narration first (refines prose outside quotes),
+        // then dialogue (refines text inside quotes). Both preserve the other's
+        // territory, so they compose into one combined v2.
+        const draftText = storyText; // raw draft, preserved as v1 if a refine pass changes it
+
+        // Narration editor pass — refines prose outside quotes when enabled
+        const narrationSettings = getNarrationEditorSettings(req.projectId, getOpenProject);
+        if (narrationSettings.enabled && storyText && containsNarration(storyText)) {
+          const narrationResult = await runNarrationPass(
+            event,
+            aiParagraph.id,
+            storyText,
+            narrationSettings,
+            aiService,
+            providerConfig,
+            model,
+            req.projectId,
+            myToken,
+          );
+          storyText = narrationResult.adoptedText;
+        }
+
         // Dialogue editor pass — runs unconditionally when enabled + has dialogue
-        const draftText = storyText; // raw draft, preserved as v1 if the refine pass changes it
         const dialogueSettings = getDialogueEditorSettings(req.projectId, getOpenProject);
         if (dialogueSettings.enabled && storyText && containsDialogue(storyText)) {
           const passResult = await runDialoguePass(
@@ -808,6 +982,24 @@ export function registerAIHandlers(): void {
               console.error('Failed to auto-apply world change:', applyErr);
             }
           }
+        }
+
+        // Plot-compliance pass — detect whether the paragraph fulfilled any
+        // short-term planned event, flip it to occurred, and advance the queue.
+        if (getPlotComplianceEnabled(req.projectId, getOpenProject) && storyText) {
+          await runPlotCompliancePass(
+            event,
+            aiParagraph.id,
+            storyText,
+            worldMemoryService,
+            projectDb,
+            req.projectId,
+            effectiveBranchId,
+            aiService,
+            providerConfig,
+            model,
+            myToken,
+          );
         }
 
         const completePayload: StreamCompletePayload = {
@@ -1207,9 +1399,26 @@ export function registerAIHandlers(): void {
           }
         }
 
-        // Build the text-to-save before the dialogue pass
+        // Build the text-to-save before the refine passes
         let textToSave = regenStoryText || fullText;
         const regenDraft = textToSave; // raw regenerated draft, before refine
+
+        // Narration editor pass — refines prose outside quotes when enabled
+        const regenNarrationSettings = getNarrationEditorSettings(req.projectId, getOpenProject);
+        if (regenNarrationSettings.enabled && textToSave && containsNarration(textToSave)) {
+          const narrationResult = await runNarrationPass(
+            event,
+            req.targetParagraphId,
+            textToSave,
+            regenNarrationSettings,
+            aiService,
+            providerConfig,
+            model,
+            req.projectId,
+            myToken,
+          );
+          textToSave = narrationResult.adoptedText;
+        }
 
         // Dialogue editor pass — runs unconditionally when enabled + has dialogue
         const regenDialogueSettings = getDialogueEditorSettings(req.projectId, getOpenProject);

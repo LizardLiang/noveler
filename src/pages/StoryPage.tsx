@@ -14,6 +14,8 @@ import { SystemPromptEditor } from '@/components/settings/SystemPromptEditor';
 import { WorldRulesEditor } from '@/components/settings/WorldRulesEditor';
 import { WritingStyleConfig } from '@/components/settings/WritingStyleConfig';
 import { DialogueEditorConfig } from '@/components/settings/DialogueEditorConfig';
+import { NarrationEditorConfig } from '@/components/settings/NarrationEditorConfig';
+import { PlotComplianceConfig } from '@/components/settings/PlotComplianceConfig';
 import { GlobalSearch } from '@/components/search/GlobalSearch';
 import { StoryStats } from '@/components/stats/StoryStats';
 import { zhTW } from '@/i18n/zh-TW';
@@ -748,6 +750,8 @@ export function StoryPage() {
           <SystemPromptEditor projectId={projectId} />
           <WritingStyleConfig projectId={projectId} />
           <DialogueEditorConfig projectId={projectId} />
+          <NarrationEditorConfig projectId={projectId} />
+          <PlotComplianceConfig projectId={projectId} />
         </div>
       )}
 

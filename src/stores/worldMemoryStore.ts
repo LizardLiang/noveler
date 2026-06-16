@@ -78,6 +78,8 @@ interface WorldMemoryState {
       impact?: string;
       storyTimestamp?: string;
       status?: 'occurred' | 'planned';
+      horizon?: 'short' | 'mid' | 'long';
+      orderInHorizon?: number;
     },
   ) => Promise<StoryEvent | null>;
   updateEventRemote: (
@@ -90,6 +92,8 @@ interface WorldMemoryState {
       impact?: string;
       participatingCharacters?: string[];
       status?: 'occurred' | 'planned';
+      horizon?: 'short' | 'mid' | 'long';
+      orderInHorizon?: number;
     },
   ) => Promise<void>;
   deleteEvent: (projectId: string, id: string) => Promise<void>;

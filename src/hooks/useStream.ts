@@ -114,6 +114,19 @@ export function useStream(projectId: string | undefined, options?: UseStreamOpti
         return;
       }
 
+      if (data.type === 'narration_refining') {
+        // Narration editor pass started or finished — share the refining indicator
+        const refining = Boolean((data.meta as Record<string, unknown> | undefined)?.refining);
+        setRefiningParagraphId(refining ? data.paragraphId : null);
+        return;
+      }
+
+      if (data.type === 'narration_refine_failed') {
+        // Narration pass failed — surface the same refineUnavailable notification
+        setRefineUnavailableNotify(true);
+        return;
+      }
+
       if (data.type === 'reasoning') {
         // Thinking-model reasoning — accumulate separately; never part of the story.
         if (!data.done && data.delta) appendReasoning(data.paragraphId, data.delta);

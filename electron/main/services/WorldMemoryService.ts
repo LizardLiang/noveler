@@ -1,6 +1,12 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { ProjectDatabase } from './database.js';
-import type { Character, Relationship, StoryEvent } from '../../shared/worldMemoryTypes.js';
+import type { Character, Relationship, StoryEvent, EventHorizon } from '../../shared/worldMemoryTypes.js';
+
+const VALID_HORIZONS: ReadonlySet<EventHorizon> = new Set(['short', 'mid', 'long']);
+
+function normalizeHorizon(value: unknown): EventHorizon {
+  return VALID_HORIZONS.has(value as EventHorizon) ? (value as EventHorizon) : 'mid';
+}
 
 // ============================================================
 // WorldMemoryService — CRUD for characters, relationships, events
@@ -66,6 +72,8 @@ function rowToEvent(row: Record<string, unknown>): StoryEvent {
     impact: String(row.impact ?? ''),
     participatingCharacters: parseJsonSafe<string[]>(row.participating_characters, []),
     status: row.status === 'planned' ? 'planned' : 'occurred',
+    horizon: normalizeHorizon(row.horizon),
+    orderInHorizon: Number(row.order_in_horizon ?? 0),
     paragraphId: row.paragraph_id ? String(row.paragraph_id) : null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -300,6 +308,8 @@ export class WorldMemoryService {
       impact?: string;
       storyTimestamp?: string;
       status?: 'occurred' | 'planned';
+      horizon?: EventHorizon;
+      orderInHorizon?: number;
       paragraphId?: string | null;
     },
   ): StoryEvent {
@@ -307,8 +317,8 @@ export class WorldMemoryService {
     const now = new Date().toISOString();
     db.prepare(
       `INSERT INTO events
-        (id, project_id, branch_id, name, description, story_timestamp, impact, participating_characters, status, paragraph_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, project_id, branch_id, name, description, story_timestamp, impact, participating_characters, status, horizon, order_in_horizon, paragraph_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
       projectId,
@@ -319,6 +329,8 @@ export class WorldMemoryService {
       String(data.impact ?? ''),
       JSON.stringify(data.participatingCharacters ?? []),
       data.status === 'planned' ? 'planned' : 'occurred',
+      normalizeHorizon(data.horizon),
+      Number(data.orderInHorizon ?? 0),
       data.paragraphId != null ? String(data.paragraphId) : null,
       now,
       now,
@@ -336,6 +348,9 @@ export class WorldMemoryService {
       impact?: string;
       participatingCharacters?: string[];
       status?: 'occurred' | 'planned';
+      horizon?: EventHorizon;
+      orderInHorizon?: number;
+      paragraphId?: string | null;
     },
   ): StoryEvent | null {
     const existing = this.getEvent(db, id);
@@ -343,9 +358,11 @@ export class WorldMemoryService {
 
     const now = new Date().toISOString();
     const nextStatus = updates.status ?? existing.status;
+    const nextParagraphId =
+      updates.paragraphId !== undefined ? updates.paragraphId : existing.paragraphId;
     db.prepare(
       `UPDATE events SET
-        name=?, description=?, story_timestamp=?, impact=?, participating_characters=?, status=?, updated_at=?
+        name=?, description=?, story_timestamp=?, impact=?, participating_characters=?, status=?, horizon=?, order_in_horizon=?, paragraph_id=?, updated_at=?
        WHERE id=?`,
     ).run(
       String(updates.name ?? existing.name),
@@ -354,6 +371,9 @@ export class WorldMemoryService {
       String(updates.impact ?? existing.impact),
       JSON.stringify(updates.participatingCharacters ?? existing.participatingCharacters),
       nextStatus === 'planned' ? 'planned' : 'occurred',
+      normalizeHorizon(updates.horizon ?? existing.horizon),
+      Number(updates.orderInHorizon ?? existing.orderInHorizon),
+      nextParagraphId != null ? String(nextParagraphId) : null,
       now,
       id,
     );
@@ -501,6 +521,8 @@ export class WorldMemoryService {
         impact: typeof item.impact === 'string' ? item.impact : '',
         storyTimestamp: typeof item.storyTimestamp === 'string' ? item.storyTimestamp : '',
         status: (item.status === 'planned' ? 'planned' : 'occurred') as 'occurred' | 'planned',
+        horizon: normalizeHorizon(item.horizon),
+        orderInHorizon: typeof item.orderInHorizon === 'number' ? item.orderInHorizon : 0,
       };
       // Import means overwrite: update the existing event by name, else create.
       const existing = db
@@ -642,6 +664,77 @@ export class WorldMemoryService {
     return summary.slice(0, maxChars) + '\n…（已截斷）';
   }
 
+  // ---- Plot steering (horizon-weighted compliance injection) ----
+
+  /**
+   * Return planned events sorted within a horizon bucket: orderInHorizon ASC,
+   * then created_at ASC (older first, roughly the intended writing order).
+   */
+  private plannedByHorizon(
+    db: ProjectDatabase,
+    projectId: string,
+    branchId: string,
+    horizon: EventHorizon,
+  ): StoryEvent[] {
+    const rows = db.prepare(
+      `SELECT * FROM events
+       WHERE project_id=? AND branch_id=? AND status='planned' AND horizon=?
+       ORDER BY order_in_horizon ASC, created_at ASC`,
+    ).all(projectId, branchId, horizon);
+    return rows.map(rowToEvent);
+  }
+
+  /**
+   * Build horizon-weighted steering text for prompt injection.
+   *
+   * - longGoals: the `long` bucket — folded into the system prompt (primacy),
+   *   background direction the story should ultimately move toward.
+   * - nearTermDirective: `short` (write toward now) + `mid` (build toward) buckets,
+   *   injected near the end of the prompt (recency) with an explicit
+   *   "foreshadow but don't resolve yet" guard.
+   *
+   * Returns empty strings when a bucket has no planned events.
+   */
+  buildPlotSteering(
+    db: ProjectDatabase,
+    projectId: string,
+    branchId: string,
+  ): { longGoals: string; nearTermDirective: string } {
+    const short = this.plannedByHorizon(db, projectId, branchId, 'short');
+    const mid = this.plannedByHorizon(db, projectId, branchId, 'mid');
+    const long = this.plannedByHorizon(db, projectId, branchId, 'long');
+
+    const fmt = (e: StoryEvent): string => {
+      const chars = e.participatingCharacters.join('、');
+      const who = chars ? `（涉及：${chars}）` : '';
+      const desc = e.description ? `：${e.description}` : '';
+      return `- ${e.name}${desc}${who}`;
+    };
+
+    const longParts: string[] = [];
+    if (long.length > 0) {
+      longParts.push('本作的長期劇情走向（最終要朝這些方向發展，但距離尚遠，目前只需保持一致、不可提前發生）：');
+      for (const e of long) longParts.push(fmt(e));
+    }
+
+    const nearParts: string[] = [];
+    if (short.length > 0) {
+      nearParts.push('【接下來的劇情目標（必須朝此推進）】');
+      nearParts.push('以下是作者規劃、即將發生的劇情。請讓接下來這幾段自然地朝這些方向推進、實際演出：');
+      for (const e of short) nearParts.push(fmt(e));
+    }
+    if (mid.length > 0) {
+      nearParts.push('【中期鋪陳（可埋伏筆，但尚未發生）】');
+      nearParts.push('以下劇情稍後才會發生。可以為它們鋪陳、埋下伏筆，但在劇情實際演到之前，絕不可當成已經發生、也不可直接寫出結局：');
+      for (const e of mid) nearParts.push(fmt(e));
+    }
+
+    return {
+      longGoals: longParts.join('\n'),
+      nearTermDirective: nearParts.join('\n'),
+    };
+  }
+
   // ---- Rollback world memory changes for detached paragraphs ----
 
   rollbackWorldMemory(
@@ -715,6 +808,10 @@ export class WorldMemoryService {
               storyTimestamp: prev.storyTimestamp,
               impact: prev.impact,
               participatingCharacters: prev.participatingCharacters,
+              status: prev.status,
+              horizon: prev.horizon,
+              orderInHorizon: prev.orderInHorizon,
+              paragraphId: prev.paragraphId,
             });
             break;
         }

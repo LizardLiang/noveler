@@ -699,3 +699,68 @@ export async function applyWorldChange(
       break;
   }
 }
+
+// ---- Helper: apply plot-fulfillment results + advance the horizon queue ----
+
+/**
+ * Flips fulfilled short-term planned events to `occurred` (linking the paragraph
+ * that enacted them), then slides the queue forward: for each fulfilled event,
+ * promote the next `mid` event → `short` and the next `long` event → `mid`
+ * (lowest order_in_horizon first). All writes are recorded in the changelog so
+ * detach/rollback reverts them.
+ *
+ * Returns true when any event changed (so the caller can refresh the renderer).
+ */
+export function applyPlotFulfillment(
+  service: WorldMemoryService,
+  db: ProjectDatabase,
+  projectId: string,
+  branchId: string,
+  paragraphId: string,
+  fulfilledIds: string[],
+): boolean {
+  if (fulfilledIds.length === 0) return false;
+
+  let changed = 0;
+
+  // 1. Mark fulfilled short events as occurred.
+  let promotionsNeeded = 0;
+  for (const id of fulfilledIds) {
+    const existing = service.getEvent(db, id);
+    if (!existing || existing.status !== 'planned' || existing.horizon !== 'short') continue;
+    const snapshot = { ...existing };
+    service.updateEvent(db, id, { status: 'occurred', paragraphId });
+    recordChangelog(db, projectId, branchId, paragraphId, 'event', id, 'update', snapshot, {
+      status: 'occurred',
+      paragraphId,
+    });
+    changed++;
+    promotionsNeeded++;
+  }
+
+  if (changed === 0) return false;
+
+  // 2. Advance the queue: promote `promotionsNeeded` mid→short, then long→mid.
+  const promote = (from: 'mid' | 'long', to: 'short' | 'mid', count: number): void => {
+    if (count <= 0) return;
+    const candidates = service
+      .listEvents(db, projectId, branchId)
+      .filter(e => e.status === 'planned' && e.horizon === from)
+      .sort((a, b) =>
+        a.orderInHorizon !== b.orderInHorizon
+          ? a.orderInHorizon - b.orderInHorizon
+          : a.createdAt.localeCompare(b.createdAt),
+      )
+      .slice(0, count);
+    for (const e of candidates) {
+      const snapshot = { ...e };
+      service.updateEvent(db, e.id, { horizon: to });
+      recordChangelog(db, projectId, branchId, paragraphId, 'event', e.id, 'update', snapshot, { horizon: to });
+    }
+  };
+
+  promote('mid', 'short', promotionsNeeded);
+  promote('long', 'mid', promotionsNeeded);
+
+  return true;
+}
