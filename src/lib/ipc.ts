@@ -15,6 +15,10 @@ import type {
   ContextBudgetInfo,
   SuggestionsRequest,
   SuggestionsResponse,
+  TestGenerateRequest,
+  GetModelsRequest,
+  ModelInfo,
+  CreditsInfo,
 } from '@/types/ipc';
 import type { GlobalConfig, RecentProject, ParagraphMeta } from '@/types/models';
 
@@ -96,8 +100,16 @@ export const aiApi = {
     ipcInvoke<IpcResult<void>>('ai:cancel', projectId),
   testConnection: (providerId?: string) =>
     ipcInvoke<IpcResult<{ message: string }>>('ai:testConnection', providerId),
+  getModels: (req: GetModelsRequest) =>
+    ipcInvoke<IpcResult<ModelInfo[]>>('ai:getModels', req),
+  getCredits: (req: GetModelsRequest) =>
+    ipcInvoke<IpcResult<CreditsInfo>>('ai:getCredits', req),
   suggestions: (req: SuggestionsRequest) =>
     ipcInvoke<IpcResult<SuggestionsResponse>>('ai:suggestions', req),
+  testGenerate: (req: TestGenerateRequest) =>
+    ipcInvoke<IpcResult<void>>('ai:testGenerate', req),
+  testGenerateCancel: () =>
+    ipcInvoke<IpcResult<void>>('ai:testGenerate:cancel'),
 };
 
 // ===== Paragraph Management =====

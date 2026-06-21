@@ -2,18 +2,26 @@ import { useState, useEffect, useCallback } from 'react';
 import { projectSettingsApi } from '@/lib/ipc';
 import { zhTW } from '@/i18n/zh-TW';
 
+// 文風／類型值必須對應後端 aiHandlers.ts 的 GENRE_DIRECTIVES key。
+export type Genre = '網文爽文' | '輕鬆網文' | '熱血戰鬥流' | '古風仙俠' | '嚴肅文學';
+
 export interface WritingStyle {
+  genre: Genre;
   perspective: 'first_person' | 'third_limited' | 'third_omniscient';
   tone: 'serious' | 'humorous' | 'dramatic' | 'poetic' | 'neutral';
   detailLevel: 'concise' | 'moderate' | 'elaborate';
   languageStyle: 'formal' | 'casual' | 'literary';
+  /** 成人內容模式：開啟後後端注入 NSFW 授權指令。預設關閉，不影響既有專案。 */
+  nsfw?: boolean;
 }
 
 const DEFAULT_STYLE: WritingStyle = {
+  genre: '網文爽文',
   perspective: 'third_limited',
   tone: 'neutral',
   detailLevel: 'moderate',
   languageStyle: 'literary',
+  nsfw: false,
 };
 
 interface OptionButtonProps {
@@ -104,6 +112,29 @@ export function WritingStyleConfig({ projectId }: WritingStyleConfigProps) {
         </button>
       </div>
 
+      {/* Genre / 文風 — the strongest lever for web-novel vs literary tone */}
+      <div>
+        <div style={{ fontSize: 13, color: 'var(--color-text-secondary)', marginBottom: 6 }}>
+          {zhTW.writingStyle.genre}
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {([
+            ['網文爽文', zhTW.writingStyle.genreWebNovel],
+            ['輕鬆網文', zhTW.writingStyle.genreLightNovel],
+            ['熱血戰鬥流', zhTW.writingStyle.genreBattle],
+            ['古風仙俠', zhTW.writingStyle.genreXianxia],
+            ['嚴肅文學', zhTW.writingStyle.genreLiterary],
+          ] as const).map(([val, label]) => (
+            <OptionButton
+              key={val}
+              selected={style.genre === val}
+              onClick={() => handleChange('genre', val)}
+              label={label}
+            />
+          ))}
+        </div>
+      </div>
+
       {/* Perspective */}
       <div>
         <div style={{ fontSize: 13, color: 'var(--color-text-secondary)', marginBottom: 6 }}>
@@ -190,6 +221,26 @@ export function WritingStyleConfig({ projectId }: WritingStyleConfigProps) {
             />
           ))}
         </div>
+      </div>
+
+      {/* NSFW / 成人內容 — off by default, never injected unless explicitly enabled */}
+      <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 12 }}>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={!!style.nsfw}
+            onChange={e => handleChange('nsfw', e.target.checked)}
+            style={{ marginTop: 2, cursor: 'pointer' }}
+          />
+          <span>
+            <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-text-primary)' }}>
+              {zhTW.writingStyle.nsfw}
+            </span>
+            <span style={{ display: 'block', fontSize: 12, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
+              {zhTW.writingStyle.nsfwHint}
+            </span>
+          </span>
+        </label>
       </div>
     </div>
   );

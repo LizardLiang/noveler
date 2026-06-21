@@ -127,6 +127,31 @@ export interface ProviderInfo {
   oauthEmail?: string;
 }
 
+// Request shape shared by ai:getModels / ai:getCredits. The picker lives in the
+// add/edit-provider form, so config arrives from the unsaved form. When editing
+// with a blank/__KEEP_EXISTING__ key, the handler falls back to the stored key by id.
+export interface GetModelsRequest {
+  baseUrl: string;
+  apiKey?: string;
+  providerId?: string;
+}
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  contextLength?: number;
+  // Per-token USD prices (OpenRouter only; undefined for providers without pricing).
+  pricePrompt?: number;
+  priceCompletion?: number;
+  isFree: boolean;
+}
+
+export interface CreditsInfo {
+  totalCredits: number;
+  totalUsage: number;
+  remaining: number;
+}
+
 export interface CreateProjectRequest {
   name: string;
   description: string;
@@ -159,6 +184,38 @@ export interface GenerateRequest {
   branchId: string;
   userMessage: string;
   modelOverride?: string;
+}
+
+// ===== Test Story Generator (設定頁彈窗，獨立於專案) =====
+export interface TestStyle {
+  genre?: string;       // 文風／類型（如「網文爽文」）→ 映射為強風格指令
+  perspective?: string;
+  tone?: string;
+  detailLevel?: string;
+  languageStyle?: string;
+  nsfw?: boolean;       // 成人內容模式 → 注入 NSFW 授權指令
+}
+
+export interface TestGenerateRequest {
+  worldview: string;          // 世界觀背景 → 注入為 worldRules
+  characterSettings: string;  // 角色設定 → 注入為 customInstructions
+  guidance: string;           // 引導提示詞 → 併入每段 userInput
+  style: TestStyle;
+  modelOverride?: string;
+}
+
+export interface TestChunkPayload {
+  scenarioIndex: number;
+  delta: string;
+}
+
+export interface TestScenarioDonePayload {
+  scenarioIndex: number;
+}
+
+export interface TestErrorPayload {
+  scenarioIndex?: number;
+  error: { code: string; message: string };
 }
 
 export interface StreamChunkPayload {

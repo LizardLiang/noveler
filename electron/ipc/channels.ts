@@ -20,11 +20,20 @@ export const IPC_CHANNELS = {
   AI_CANCEL: 'ai:cancel',
   AI_TEST_CONNECTION: 'ai:testConnection',
   AI_GET_MODELS: 'ai:getModels',
+  AI_GET_CREDITS: 'ai:getCredits',
 
   // AI 串流推送（主程序 → 渲染程序）
   STREAM_CHUNK: 'stream:chunk',
   STREAM_COMPLETE: 'stream:complete',
   STREAM_ERROR: 'stream:error',
+
+  // 測試寫作效果（設定頁彈窗，獨立於專案）
+  TEST_GENERATE: 'ai:testGenerate',
+  TEST_GENERATE_CANCEL: 'ai:testGenerate:cancel',
+  TEST_CHUNK: 'ai:testGenerate:chunk',
+  TEST_SCENARIO_DONE: 'ai:testGenerate:scenarioDone',
+  TEST_DONE: 'ai:testGenerate:done',
+  TEST_ERROR: 'ai:testGenerate:error',
 
   // 段落管理
   PARAGRAPH_LIST: 'paragraph:list',

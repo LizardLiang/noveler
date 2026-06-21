@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { memo, useState, useCallback } from 'react';
 import { StreamingTextRenderer } from './StreamingTextRenderer';
 import { zhTW } from '@/i18n/zh-TW';
 import type { ParagraphMeta } from '@/types/models';
@@ -33,7 +33,7 @@ interface ParagraphBlockProps {
   onSwitchVersion?: (id: string, version: number) => void;
 }
 
-export function ParagraphBlock({
+export const ParagraphBlock = memo(function ParagraphBlock({
   paragraph,
   content,
   streamingContent,
@@ -433,7 +433,7 @@ export function ParagraphBlock({
       `}</style>
     </div>
   );
-}
+});
 
 interface ToolbarButtonProps {
   title: string;

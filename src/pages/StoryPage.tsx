@@ -94,7 +94,12 @@ export function StoryPage() {
     if (!projectId || !currentBranchId) return;
     setSuggestionsLoading(true);
     try {
-      const result = await aiApi.suggestions({ projectId, branchId: currentBranchId });
+      let result = await aiApi.suggestions({ projectId, branchId: currentBranchId });
+      // Retry once if the call succeeded but yielded nothing (complements the
+      // backend retry for the rare double-empty case).
+      if (result.success && result.data.suggestions.length === 0) {
+        result = await aiApi.suggestions({ projectId, branchId: currentBranchId });
+      }
       if (result.success && result.data.suggestions.length > 0) {
         setSuggestions(result.data.suggestions);
       } else {
@@ -113,6 +118,19 @@ export function StoryPage() {
 
   // Initialize stream listeners
   const { cancelGeneration } = useStream(projectId, streamOptions);
+
+  // Fetch suggestions on initial load and branch switch so the 3 options appear
+  // every time a story is opened — not only after a generation completes.
+  // Guards prevent double-fetching: skip while generating (handleSend clears
+  // suggestions then sets generating; onComplete refetches), and skip when
+  // suggestions already exist or a fetch is in flight.
+  useEffect(() => {
+    if (!projectId || !currentBranchId || !hasActiveProvider) return;
+    if (isGenerating || suggestionsLoading || suggestions.length > 0) return;
+    if (paragraphs.length === 0) return;
+    fetchSuggestions();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentBranchId, hasActiveProvider, isGenerating, paragraphs.length]);
 
   // Auto-scroll to bottom when streaming
   useEffect(() => {
@@ -375,6 +393,20 @@ export function StoryPage() {
   // Copy text to clipboard
   const handleCopy = useCallback((content: string) => {
     navigator.clipboard.writeText(content).catch(() => { /* ignore */ });
+  }, []);
+
+  // Jump to top / bottom of the story area
+  const scrollToTop = useCallback(() => {
+    shouldAutoScrollRef.current = false;
+    scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    shouldAutoScrollRef.current = true;
+    const container = scrollContainerRef.current;
+    if (container) {
+      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+    }
   }, []);
 
   if (loading) {
@@ -742,6 +774,8 @@ export function StoryPage() {
             width: '100%',
             alignSelf: 'center',
             boxSizing: 'border-box',
+            minHeight: 0,
+            overflowY: 'auto',
           }}
         >
           <WorldRulesEditor projectId={projectId} />
@@ -888,6 +922,82 @@ export function StoryPage() {
           <div style={{ height: 16 }} />
         </div>
       </div>
+
+      {/* Jump to top / bottom — floating controls over the story area */}
+      {paragraphs.length > 0 && (
+        <div
+          style={{
+            position: 'absolute',
+            right: 24,
+            bottom: 96,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            zIndex: 40,
+          }}
+        >
+          <button
+            onClick={scrollToTop}
+            title="跳到最上方"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 36,
+              height: 36,
+              borderRadius: '50%',
+              border: '1px solid var(--color-border)',
+              background: 'var(--color-surface)',
+              color: 'var(--color-text-secondary)',
+              cursor: 'pointer',
+              boxShadow: 'var(--shadow-md)',
+            }}
+            onMouseEnter={e => {
+              (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--color-accent)';
+              (e.currentTarget as HTMLButtonElement).style.color = 'var(--color-accent)';
+            }}
+            onMouseLeave={e => {
+              (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--color-border)';
+              (e.currentTarget as HTMLButtonElement).style.color = 'var(--color-text-secondary)';
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 10l4-4 4 4" />
+              <line x1="4" y1="4" x2="12" y2="4" />
+            </svg>
+          </button>
+          <button
+            onClick={scrollToBottom}
+            title="跳到最下方"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 36,
+              height: 36,
+              borderRadius: '50%',
+              border: '1px solid var(--color-border)',
+              background: 'var(--color-surface)',
+              color: 'var(--color-text-secondary)',
+              cursor: 'pointer',
+              boxShadow: 'var(--shadow-md)',
+            }}
+            onMouseEnter={e => {
+              (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--color-accent)';
+              (e.currentTarget as HTMLButtonElement).style.color = 'var(--color-accent)';
+            }}
+            onMouseLeave={e => {
+              (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--color-border)';
+              (e.currentTarget as HTMLButtonElement).style.color = 'var(--color-text-secondary)';
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 6l4 4 4-4" />
+              <line x1="4" y1="12" x2="12" y2="12" />
+            </svg>
+          </button>
+        </div>
+      )}
 
       {/* Generation error banner — surfaces failures that would otherwise be a silent empty paragraph */}
       {generationError && (

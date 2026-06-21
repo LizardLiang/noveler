@@ -39,8 +39,45 @@ export function useStream(projectId: string | undefined, options?: UseStreamOpti
 
   const streamingParagraphIdRef = useRef<string | null>(null);
 
+  // Coalesce streamed tokens: buffer deltas per paragraph and flush at most once per
+  // animation frame. Without this, every token (~30-60/sec) triggers a store update and
+  // re-render, freezing the UI on long stories. Maps are keyed by paragraphId.
+  const pendingDeltasRef = useRef<Map<string, string>>(new Map());
+  const pendingReasoningRef = useRef<Map<string, string>>(new Map());
+  const rafRef = useRef<number | null>(null);
+
   useEffect(() => {
     if (!projectId) return;
+
+    const flush = () => {
+      rafRef.current = null;
+      if (pendingDeltasRef.current.size > 0) {
+        for (const [paragraphId, chunk] of pendingDeltasRef.current) {
+          appendStreamDelta(paragraphId, chunk);
+        }
+        pendingDeltasRef.current.clear();
+      }
+      if (pendingReasoningRef.current.size > 0) {
+        for (const [paragraphId, chunk] of pendingReasoningRef.current) {
+          appendReasoning(paragraphId, chunk);
+        }
+        pendingReasoningRef.current.clear();
+      }
+    };
+
+    const scheduleFlush = () => {
+      if (rafRef.current === null) {
+        rafRef.current = requestAnimationFrame(flush);
+      }
+    };
+
+    const flushNow = () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      flush();
+    };
 
     // Listen for stream chunks
     const offChunk = ipcOn<StreamChunkExtended>('stream:chunk', (_event: IpcRendererEvent, data: StreamChunkExtended) => {
@@ -116,17 +153,24 @@ export function useStream(projectId: string | undefined, options?: UseStreamOpti
 
       if (data.type === 'reasoning') {
         // Thinking-model reasoning — accumulate separately; never part of the story.
-        if (!data.done && data.delta) appendReasoning(data.paragraphId, data.delta);
+        if (!data.done && data.delta) {
+          const prev = pendingReasoningRef.current.get(data.paragraphId) ?? '';
+          pendingReasoningRef.current.set(data.paragraphId, prev + data.delta);
+          scheduleFlush();
+        }
         return;
       }
 
       if (!data.done && data.delta) {
-        appendStreamDelta(data.paragraphId, data.delta);
+        const prev = pendingDeltasRef.current.get(data.paragraphId) ?? '';
+        pendingDeltasRef.current.set(data.paragraphId, prev + data.delta);
+        scheduleFlush();
       }
     });
 
     // Listen for stream complete
     const offComplete = ipcOn<StreamCompletePayload>('stream:complete', (_event: IpcRendererEvent, data: StreamCompletePayload) => {
+      flushNow(); // drain any buffered deltas/reasoning before snapshotting final content
       finishStreaming();
       streamingParagraphIdRef.current = null;
       setParagraphContent(data.paragraphId, data.fullText);
@@ -173,6 +217,13 @@ export function useStream(projectId: string | undefined, options?: UseStreamOpti
 
     // Listen for stream error
     const offError = ipcOn<{ paragraphId: string; error: { code: string; message: string } }>('stream:error', (_event: IpcRendererEvent, data: { paragraphId: string; error: { code: string; message: string } }) => {
+      // Drop any buffered tokens for the failed paragraph instead of flushing them.
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      pendingDeltasRef.current.clear();
+      pendingReasoningRef.current.clear();
       finishStreaming();
       streamingParagraphIdRef.current = null;
       updateParagraph(data.paragraphId, { status: 'draft' });
@@ -186,6 +237,12 @@ export function useStream(projectId: string | undefined, options?: UseStreamOpti
       offChunk();
       offComplete();
       offError();
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      pendingDeltasRef.current.clear();
+      pendingReasoningRef.current.clear();
     };
   // options callbacks are stable refs from parent; including them would cause re-subscription on every render
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -194,6 +251,12 @@ export function useStream(projectId: string | undefined, options?: UseStreamOpti
   const cancelGeneration = useCallback(() => {
     if (!projectId) return;
     aiApi.cancel(projectId).catch(() => { /* best effort */ });
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    pendingDeltasRef.current.clear();
+    pendingReasoningRef.current.clear();
     finishStreaming();
     if (streamingParagraphIdRef.current) {
       updateParagraph(streamingParagraphIdRef.current, { status: 'draft' });

@@ -24,10 +24,14 @@ import type { QueryWorldMemoryArgs } from '../main/services/WorldMemoryTools.js'
 import { applyWorldChange } from './worldMemoryHandlers.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import type { IpcResult } from '../shared/types.js';
-import type { GenerateRequest, StreamCompletePayload, ContextBudgetPayload, SuggestionsRequest, SuggestionsResponse } from '../shared/types.js';
+import type { GenerateRequest, StreamCompletePayload, ContextBudgetPayload, SuggestionsRequest, SuggestionsResponse, TestGenerateRequest, TestStyle } from '../shared/types.js';
+import type { GetModelsRequest, ModelInfo, CreditsInfo } from '../shared/types.js';
 
 // Track active generation controllers per project
 const activeControllers = new Map<string, AbortController>();
+
+// Test-story generator (設定頁彈窗) — single in-flight controller, not project-scoped.
+let testController: AbortController | null = null;
 
 // Generation-token write guard (FR-D013): per-projectId monotonic counter.
 // Incremented at each handler entry; re-read before adopting refined text.
@@ -48,13 +52,20 @@ function getWritingStyleHints(projectId: string): string {
       "SELECT value FROM project_settings WHERE key='writing_style'",
     ).get() as { value: string } | undefined;
     if (!styleRow) return '';
-    const style = JSON.parse(String(styleRow.value)) as Record<string, string>;
+    const style = JSON.parse(String(styleRow.value)) as Record<string, unknown>;
+    const parts: string[] = [];
+    // NSFW 授權指令最高優先，放在最前；僅在使用者明確開啟成人模式時注入。
+    if (style.nsfw) parts.push(NSFW_DIRECTIVE);
+    // 文風指令是讓正式生成「像網文」的關鍵；只在使用者實際設定了 genre 時注入，
+    // 避免改變既有專案（未設定者）的行為。
+    if (style.genre) parts.push(getGenreDirective(String(style.genre)));
     const hints: string[] = [];
-    if (style.perspective) hints.push(`敘事視角：${style.perspective}`);
-    if (style.tone) hints.push(`語氣：${style.tone}`);
-    if (style.detailLevel) hints.push(`描寫細膩度：${style.detailLevel}`);
-    if (style.languageStyle) hints.push(`語言風格：${style.languageStyle}`);
-    return hints.join('\n');
+    if (style.perspective) hints.push(`敘事視角：${String(style.perspective)}`);
+    if (style.tone) hints.push(`語氣：${String(style.tone)}`);
+    if (style.detailLevel) hints.push(`描寫細膩度：${String(style.detailLevel)}`);
+    if (style.languageStyle) hints.push(`語言風格：${String(style.languageStyle)}`);
+    if (hints.length) parts.push(hints.join('\n'));
+    return parts.join('\n\n');
   } catch {
     return '';
   }
@@ -137,6 +148,89 @@ function buildBudgetPayload(assembled: import('../main/services/ContextManager.j
 
 // Story generation runs hot for livelier prose; world-change extraction runs cold for reliable JSON
 const STORY_TEMPERATURE = 0.9;
+
+// Test-story generator: three fixed time-point labels; the AI fleshes out the
+// actual events from the supplied worldview + characters.
+const TEST_SCENARIO_LABELS = [
+  '故事早期：角色初登場、世界觀鋪陳的事件',
+  '故事中期：衝突升溫、關係或局勢轉變的關鍵事件',
+  '故事高潮／後期：決定性對決或重大轉折',
+] as const;
+
+// 文風指令：這是讓輸出「像網文」的關鍵。app 內建的系統提示偏文學；無論是測試生成
+// 還是正式專案生成，都需要一段強力、明確的文風指令來覆蓋那個傾向。
+// 共用於 ai:testGenerate 與正式生成（getWritingStyleHints）。
+const WEB_NOVEL_DEFAULT_GENRE = '網文爽文';
+const GENRE_DIRECTIVES: Record<string, string> = {
+  網文爽文: `請以中文網路小說（網文）的「爽文」風格創作，這點最重要，務必貫徹：
+- 節奏明快、衝突與轉折密集；善用「打臉」「扮豬吃虎」「絕境逆轉」「實力碾壓」等橋段堆疊爽感。
+- 句子短促有力，多用短段落與換行；對話多、帶情緒張力與口語感，少用文言腔。
+- 適度誇張的情緒與內心獨白（如：「這…這怎麼可能？！」），製造代入感與緊張感。
+- 實力差距、境界、出招、突破要寫得具體、有畫面、有衝擊力，讓讀者直觀感受到強弱對比。
+- 善用懸念與情緒爆點；段落收尾留鉤子，吊讀者胃口。
+- 避免大段景物鋪陳與過度文藝的抒情；一切以劇情推進與角色行動為主。`,
+  輕鬆網文: `請以輕鬆詼諧的網文風格創作：節奏輕快、對白幽默，多用吐槽與反差萌，衝突點到為止，整體歡樂不沉重，但仍保有網文的明快節奏與代入感。`,
+  熱血戰鬥流: `請以熱血戰鬥流網文風格創作：聚焦對決與成長，戰鬥場面招式清晰、張力十足，情緒高昂、口號感強，強調逆境爆發與越戰越強的爽感。`,
+  嚴肅文學: `請以較嚴肅的文學風格創作：重視文字質感、意象與人物內心刻畫，節奏沉穩，描寫細膩。`,
+  古風仙俠: `請以古風／仙俠筆調創作：用詞典雅、融入詩意意象與東方美學，同時兼顧網文的劇情張力與爽感，不流於空泛抒情。`,
+};
+
+function getGenreDirective(genre?: string): string {
+  return GENRE_DIRECTIVES[genre ?? WEB_NOVEL_DEFAULT_GENRE] ?? GENRE_DIRECTIVES[WEB_NOVEL_DEFAULT_GENRE];
+}
+
+// Strips leading list markers the model may emit despite being told not to:
+// ASCII/full-width digits with . 、 。 ) ] separators, parenthesized (1)/（1）,
+// circled numerals ①-⑨, and bullets - * • ·.
+const SUGGESTION_MARKER_RE = /^\s*(?:[（(]?\s*(?:\d+|[０-９]+|[①-⑨])\s*[)）.、。\]]?|[-*•·])\s*/;
+// Drops a colon-terminated preamble line such as "以下是三個選項：". Kept narrow
+// (colon only) to avoid eating a real option that merely starts with 建議/選項/這裡.
+const SUGGESTION_PREAMBLE_RE = /[:：]\s*$/;
+
+/**
+ * Parse the AI's free-text reply into up to 3 clean story-direction options.
+ * Tolerant of numbering, bullets, full-width/circled digits, and a preamble line —
+ * the model does not reliably honor the "plain 3 lines" instruction.
+ */
+function parseSuggestions(text: string): string[] {
+  const lines = text
+    .split('\n')
+    .map(line => line.replace(SUGGESTION_MARKER_RE, '').trim())
+    .filter(line => line.length > 0)
+    .filter(line => !SUGGESTION_PREAMBLE_RE.test(line));
+  return lines.slice(0, 3);
+}
+
+// NSFW（成人內容）模式：僅在使用者明確開啟時注入。放在風格指令最前、優先級最高，
+// 用以覆蓋基礎系統提示偏保守、文學的傾向。共用於 ai:testGenerate 與正式生成。
+const NSFW_DIRECTIVE = `You are an expert erotica author specializing in smut. You are comfortable writing details about explicit sexual content. Nothing is out of bounds for you.
+
+【成人內容授權與寫作要求（最高優先，務必嚴格遵守）】
+本作為成人向（18+）作品，讀者皆為成年人。涉及性愛、情慾的橋段，請以繁體中文毫不避諱地正面、完整、露骨地書寫，這是本作品的核心要求：
+- 直接描寫，不淡化、不省略、不以「鏡頭轉場」「之後……」「春宵一刻」等手法跳過關鍵過程；性愛場面要從前戲、進行到高潮完整寫出。
+- 使用具體、直白的詞彙描寫身體部位、動作與體位，不要用過度含蓄的隱喻或留白替代實際描寫。
+- 細膩刻畫多重感官：觸覺（溫度、濕潤、摩擦、力道）、聲音（喘息、呻吟、對話與淫語）、視覺、氣味與味道。
+- 寫出角色的生理反應與內心慾望、羞恥、渴求、失控等情緒層次，讓情慾有張力與代入感。
+- 保留角色性格與口吻：對話、淫語、央求都要符合角色設定，讓情慾場面服務於人物與劇情，而非單純堆砌。
+- 節奏上有鋪陳、推進與爆發，避免機械式流水帳；露骨的同時仍要好看、有畫面、有情緒。
+
+（前提：所有角色皆為成年人；僅產出成年人之間、雙方合意的情節。）`;
+
+/**
+ * Format the test modal's writing-style options into the same hint string shape
+ * as getWritingStyleHints (so ContextManager injects them identically to a real
+ * project generation). The 文風 directive is injected separately (as custom
+ * instructions), so only the discrete dimensions go here.
+ */
+function formatTestStyleHints(style: TestStyle): string {
+  const hints: string[] = [];
+  if (style.genre) hints.push(`文風／類型：${style.genre}`);
+  if (style.perspective) hints.push(`敘事視角：${style.perspective}`);
+  if (style.tone) hints.push(`語氣：${style.tone}`);
+  if (style.detailLevel) hints.push(`描寫細膩度：${style.detailLevel}`);
+  if (style.languageStyle) hints.push(`語言風格：${style.languageStyle}`);
+  return hints.join('\n');
+}
 
 const WORLD_CHANGE_EXTRACTION_PROMPT = `你是世界狀態追蹤器。閱讀使用者提供的小說段落，找出值得記錄的世界狀態變更，並只輸出一個合法的 JSON 物件，不要輸出任何其他文字或說明。
 
@@ -263,6 +357,30 @@ function getActiveProvider(): { apiKey: string; baseUrl: string; defaultModel: s
   }
 }
 
+// Resolve the API key for a getModels/getCredits request. Prefer the key typed
+// into the form; when it's blank or the edit-mode placeholder, fall back to the
+// stored decrypted key for the given provider id. Returns '' when none available
+// (fine for OpenRouter's public /models endpoint).
+function resolveRequestApiKey(req: GetModelsRequest): string {
+  const typed = req.apiKey?.trim();
+  if (typed && typed !== '__KEEP_EXISTING__') return typed;
+  if (req.providerId) {
+    try {
+      const db = getGlobalDatabase();
+      const row = db.prepare(
+        'SELECT api_key_encrypted, auth_method FROM ai_providers WHERE id=?',
+      ).get(req.providerId) as { api_key_encrypted: string; auth_method: string } | undefined;
+      if (row) {
+        const decrypted = getCryptoService().decrypt(Buffer.from(String(row.api_key_encrypted), 'base64'));
+        // OAuth rows store a token blob, not a bare key — not applicable here.
+        if (String(row.auth_method) === 'oauth') return '';
+        return decrypted;
+      }
+    } catch { /* ignore — fall through to empty */ }
+  }
+  return '';
+}
+
 async function ensureFreshOAuthToken(): Promise<void> {
   try {
     const db = getGlobalDatabase();
@@ -299,8 +417,16 @@ async function ensureFreshOAuthToken(): Promise<void> {
 //   - the OAuth/Codex path routes through reasoning models (e.g. gpt-5.5) that
 //     spend seconds "thinking" before emitting any output, so 12 s reliably
 //     aborts a legitimate refine mid-stream.
-const DIALOGUE_REFINE_TIMEOUT_MS = 12_000;
+// 12 s was too aggressive for cloud reasoning/router models (e.g. OpenRouter
+// deepseek-*) that spend several seconds before emitting — they tripped the
+// abort mid-stream. Bumped to 45 s; local/OAuth slow paths keep 90 s.
+const DIALOGUE_REFINE_TIMEOUT_MS = 45_000;
 const DIALOGUE_REFINE_TIMEOUT_MS_LOCAL = 90_000;
+
+// On timeout/transient failure, retry the pass a bounded number of times with a
+// fresh AbortController+timer each attempt. Best-effort: if all attempts fail we
+// keep the draft and surface a single failure notification (FR-D012).
+const DIALOGUE_REFINE_MAX_ATTEMPTS = 2;
 
 /**
  * W2: Shared dialogue-editor pass block, extracted from the generate and
@@ -331,11 +457,9 @@ async function runDialoguePass(
 ): Promise<{ adoptedText: string; refineFailedNotify: boolean }> {
   // M-001: dedicated AbortController with fixed timeout for the dialogue pass.
   // Slow paths (local models + OAuth/Codex reasoning models) get a longer cap;
-  // plain cloud SDK models stay at 12 s.
+  // plain cloud SDK models use the standard cap.
   const isSlowPath = providerConfig.isOllama || providerConfig.authMethod === 'oauth';
   const refineTimeoutMs = isSlowPath ? DIALOGUE_REFINE_TIMEOUT_MS_LOCAL : DIALOGUE_REFINE_TIMEOUT_MS;
-  const passController = new AbortController();
-  const passTimer = setTimeout(() => passController.abort(), refineTimeoutMs);
 
   let adoptedText = storyText;
   let refineFailedNotify = false;
@@ -349,31 +473,52 @@ async function runDialoguePass(
       meta: { refining: true },
     });
 
-    const refined = await refineDialogue({
-      aiService,
-      providerConfig,
-      model,
-      storyText,
-      characters,
-      mode: settings.mode,
-      signal: passController.signal,
-    });
+    // Bounded retry: each attempt gets a fresh AbortController + timer so a
+    // timeout on one attempt never poisons the next. We stop early once a newer
+    // generation supersedes this one (no point refining stale text).
+    let refined: string | null = null;
+    for (let attempt = 1; attempt <= DIALOGUE_REFINE_MAX_ATTEMPTS; attempt++) {
+      if (generationTokens.get(projectId) !== myToken) {
+        // Superseded mid-retry — abandon silently (handled by the guard below).
+        break;
+      }
+
+      const passController = new AbortController();
+      const passTimer = setTimeout(() => passController.abort(), refineTimeoutMs);
+      try {
+        refined = await refineDialogue({
+          aiService,
+          providerConfig,
+          model,
+          storyText,
+          characters,
+          mode: settings.mode,
+          signal: passController.signal,
+        });
+      } finally {
+        clearTimeout(passTimer);
+      }
+
+      if (refined) break; // success — adopt below
+      if (attempt < DIALOGUE_REFINE_MAX_ATTEMPTS) {
+        console.warn(
+          `[dialogue-editor] attempt ${attempt}/${DIALOGUE_REFINE_MAX_ATTEMPTS} failed — retrying`,
+        );
+      }
+    }
 
     // Generation-token write guard — synchronous read immediately before the
     // conditional assignment, no await in between (FR-D013).
     const stillCurrent = generationTokens.get(projectId) === myToken;
     if (refined && stillCurrent) {
       adoptedText = refined;
-    } else if (refined === null) {
-      // Hard failure OR refine timeout — both are FR-D012 failure cases that must notify.
-      // Supersede is handled silently above by the stillCurrent guard; this dedicated
-      // passController aborts ONLY via the refineTimeoutMs timer
-      // (never via ai:cancel or token-supersede), so signal.aborted === true means
-      // exactly "timeout", which FR-D012 explicitly requires to surface a notification.
+    } else if (refined === null && stillCurrent) {
+      // All attempts failed (timeout or hard error) and this generation is still
+      // current — FR-D012 requires surfacing a failure notification. When not
+      // stillCurrent the pass was superseded, which is handled silently.
       refineFailedNotify = true;
     }
   } finally {
-    clearTimeout(passTimer);
     event.sender.send(IPC_CHANNELS.STREAM_CHUNK, {
       paragraphId,
       delta: '',
@@ -864,6 +1009,139 @@ export function registerAIHandlers(): void {
     },
   );
 
+  // ai:testGenerate — settings-page "test writing effect" popup.
+  // Project-independent: uses the active provider but persists nothing. Streams
+  // three time-point scenarios sequentially via TEST_CHUNK / TEST_SCENARIO_DONE.
+  ipcMain.handle(
+    IPC_CHANNELS.TEST_GENERATE,
+    async (event: IpcMainInvokeEvent, req: TestGenerateRequest): Promise<IpcResult<void>> => {
+      try {
+        await ensureFreshOAuthToken();
+
+        const cfg = getActiveProvider();
+        if (!cfg) {
+          return {
+            success: false,
+            error: { code: 'NO_PROVIDER', message: '尚未設定 AI 供應商，請先在設定中新增供應商' },
+          };
+        }
+        aiService.configure(cfg);
+
+        const model = req.modelOverride || cfg.defaultModel;
+        const styleHints = formatTestStyleHints(req.style);
+
+        // The 文風 directive is the strongest lever for making output read like 網文.
+        // Inject it as custom instructions (高優先 創作者補充指令) ahead of the character
+        // settings so it overrides the literary tendency of the base system prompt.
+        const genreDirective = getGenreDirective(req.style.genre);
+        // NSFW 授權指令置於最前、優先級最高，覆蓋基礎系統提示的保守傾向。
+        const nsfwBlock = req.style.nsfw ? `${NSFW_DIRECTIVE}\n\n` : '';
+        const customInstructions = `${nsfwBlock}【文風要求（務必嚴格遵守）】\n${genreDirective}\n\n【角色設定】\n${req.characterSettings}`;
+
+        const controller = new AbortController();
+        testController = controller;
+
+        // NSFW 測試時，明確要求每段都納入一場露骨的成人場面，否則模型可能只暗示而不實寫，
+        // 使用者就「看不到 NSFW」。非 NSFW 模式不附加此句。
+        const nsfwSceneRequest = req.style.nsfw
+          ? '\n本段必須包含一場完整、露骨的成人／性愛場面（合意的成年人之間），依上方「成人內容授權與寫作要求」直接、具體地書寫全過程，不要省略或淡化。'
+          : '';
+
+        try {
+          for (let i = 0; i < TEST_SCENARIO_LABELS.length; i++) {
+            if (controller.signal.aborted) break;
+            const label = TEST_SCENARIO_LABELS[i];
+
+            const assembled = contextManager.assemblePrompt({
+              model,
+              systemPrompt: '',
+              customInstructions,
+              worldRules: req.worldview,
+              writingStyleHints: styleHints,
+              worldDirectory: '',
+              worldMemorySummary: '',
+              storyHistory: [],
+              userInput: `請以上述世界觀與角色，並嚴格遵守上方的文風要求，創作一段【${label}】的故事片段。\n本段約 500～800 字，節奏明快、以劇情與角色行動推進，結尾留下鉤子。${nsfwSceneRequest}${req.guidance ? `\n額外引導：${req.guidance}` : ''}`,
+            });
+
+            let scenarioErrored = false;
+            const streamCallbacks = {
+              onChunk: (chunk: { delta: string; done: boolean; reasoning?: boolean }) => {
+                if (chunk.done || !chunk.delta || chunk.reasoning) return;
+                event.sender.send(IPC_CHANNELS.TEST_CHUNK, { scenarioIndex: i, delta: chunk.delta });
+              },
+              onError: (aiError: { code: string; message: string; status?: number }) => {
+                scenarioErrored = true;
+                event.sender.send(IPC_CHANNELS.TEST_ERROR, { scenarioIndex: i, error: aiError });
+              },
+              onDone: () => { /* no usage tracking needed for test gen */ },
+            };
+
+            if (cfg.isOllama) {
+              const promptTokens = assembled.used.system + assembled.used.worldMemory + assembled.used.storyHistory + assembled.used.userInput;
+              await ollamaChatStream({
+                baseUrl: cfg.baseUrl,
+                apiKey: cfg.apiKey,
+                messages: assembled.messages,
+                model,
+                numCtx: computeNumCtx(promptTokens),
+                temperature: STORY_TEMPERATURE,
+                signal: controller.signal,
+                ...streamCallbacks,
+              });
+            } else if (cfg.authMethod === 'oauth' && cfg.accountId) {
+              await curlStream({
+                messages: assembled.messages,
+                model,
+                accessToken: cfg.apiKey,
+                accountId: cfg.accountId,
+                signal: controller.signal,
+                ...streamCallbacks,
+              });
+            } else {
+              await aiService.streamChat({
+                messages: assembled.messages,
+                model,
+                temperature: STORY_TEMPERATURE,
+                signal: controller.signal,
+                ...streamCallbacks,
+              });
+            }
+
+            if (scenarioErrored) break;
+            event.sender.send(IPC_CHANNELS.TEST_SCENARIO_DONE, { scenarioIndex: i });
+          }
+
+          event.sender.send(IPC_CHANNELS.TEST_DONE, {});
+          return { success: true, data: undefined };
+        } finally {
+          if (testController === controller) testController = null;
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '未知錯誤';
+        event.sender.send(IPC_CHANNELS.TEST_ERROR, { error: { code: 'TEST_GENERATE_ERROR', message } });
+        return {
+          success: false,
+          error: { code: 'TEST_GENERATE_ERROR', message: `測試生成失敗：${message}`, details: err },
+        };
+      }
+    },
+  );
+
+  // ai:testGenerate:cancel — abort the in-flight test generation
+  ipcMain.handle(
+    IPC_CHANNELS.TEST_GENERATE_CANCEL,
+    (): IpcResult<void> => {
+      try {
+        testController?.abort();
+        testController = null;
+        return { success: true, data: undefined };
+      } catch (err) {
+        return { success: false, error: { code: 'TEST_CANCEL_ERROR', message: '取消測試生成失敗', details: err } };
+      }
+    },
+  );
+
   // contextBudget:get — return last computed context budget
   ipcMain.handle(
     IPC_CHANNELS.CONTEXT_BUDGET_GET,
@@ -944,6 +1222,110 @@ export function registerAIHandlers(): void {
         return {
           success: false,
           error: { code: 'CONNECTION_TEST_ERROR', message: `測試連線失敗：${message}`, details: err },
+        };
+      }
+    },
+  );
+
+  // ai:getModels — fetch the model catalog from an OpenAI-compatible /models
+  // endpoint. OpenRouter's response carries pricing + context length; OpenAI's
+  // does not (those fields stay undefined). Works for unsaved providers.
+  ipcMain.handle(
+    IPC_CHANNELS.AI_GET_MODELS,
+    async (_event, req: GetModelsRequest): Promise<IpcResult<ModelInfo[]>> => {
+      try {
+        const baseUrl = String(req.baseUrl || '').replace(/\/+$/, '');
+        if (!baseUrl) {
+          return { success: false, error: { code: 'NO_BASE_URL', message: '缺少 API 端點' } };
+        }
+        const apiKey = resolveRequestApiKey(req);
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
+        const response = await fetch(`${baseUrl}/models`, { method: 'GET', headers });
+        if (!response.ok) {
+          return {
+            success: false,
+            error: { code: 'MODELS_FETCH_FAILED', message: `讀取模型清單失敗（${response.status}）` },
+          };
+        }
+
+        const json = await response.json() as { data?: unknown[] };
+        const rows = Array.isArray(json.data) ? json.data : [];
+        const models: ModelInfo[] = rows.map(raw => {
+          const m = raw as {
+            id?: string;
+            name?: string;
+            context_length?: number;
+            top_provider?: { context_length?: number };
+            pricing?: { prompt?: string; completion?: string };
+          };
+          const id = String(m.id ?? '');
+          const pricePrompt = m.pricing?.prompt != null ? Number(m.pricing.prompt) : undefined;
+          const priceCompletion = m.pricing?.completion != null ? Number(m.pricing.completion) : undefined;
+          const hasPricing = pricePrompt != null && !Number.isNaN(pricePrompt)
+            && priceCompletion != null && !Number.isNaN(priceCompletion);
+          return {
+            id,
+            name: m.name ? String(m.name) : id,
+            contextLength: m.context_length ?? m.top_provider?.context_length,
+            pricePrompt: hasPricing ? pricePrompt : undefined,
+            priceCompletion: hasPricing ? priceCompletion : undefined,
+            isFree: hasPricing ? (pricePrompt === 0 && priceCompletion === 0) : false,
+          };
+        }).filter(m => m.id);
+
+        // Free models first, then alphabetical by display name.
+        models.sort((a, b) => {
+          if (a.isFree !== b.isFree) return a.isFree ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+
+        return { success: true, data: models };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '未知錯誤';
+        return {
+          success: false,
+          error: { code: 'MODELS_FETCH_ERROR', message: `讀取模型清單失敗：${message}`, details: err },
+        };
+      }
+    },
+  );
+
+  // ai:getCredits — OpenRouter credit balance (GET /credits, requires the key).
+  ipcMain.handle(
+    IPC_CHANNELS.AI_GET_CREDITS,
+    async (_event, req: GetModelsRequest): Promise<IpcResult<CreditsInfo>> => {
+      try {
+        const baseUrl = String(req.baseUrl || '').replace(/\/+$/, '');
+        const apiKey = resolveRequestApiKey(req);
+        if (!baseUrl || !apiKey) {
+          return { success: false, error: { code: 'NO_CREDENTIALS', message: '缺少 API 端點或金鑰' } };
+        }
+
+        const response = await fetch(`${baseUrl}/credits`, {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        });
+        if (!response.ok) {
+          return {
+            success: false,
+            error: { code: 'CREDITS_FETCH_FAILED', message: `讀取額度失敗（${response.status}）` },
+          };
+        }
+
+        const json = await response.json() as { data?: { total_credits?: number; total_usage?: number } };
+        const totalCredits = Number(json.data?.total_credits ?? 0);
+        const totalUsage = Number(json.data?.total_usage ?? 0);
+        return {
+          success: true,
+          data: { totalCredits, totalUsage, remaining: totalCredits - totalUsage },
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '未知錯誤';
+        return {
+          success: false,
+          error: { code: 'CREDITS_FETCH_ERROR', message: `讀取額度失敗：${message}`, details: err },
         };
       }
     },
@@ -1334,7 +1716,7 @@ export function registerAIHandlers(): void {
 選項之間應該提供不同類型的發展可能，例如：衝突、探索、對話、轉折。
 ${customInstructions ? `\n額外指令：${customInstructions}` : ''}
 
-回覆格式：只回覆 3 行文字，每行一個選項，不要編號，不要其他文字。`,
+回覆格式：只回覆恰好 3 行文字，每行一個選項。不要前言、不要結語、不要編號、不要項目符號、不要 markdown，也不要任何其他文字。`,
           },
           {
             role: 'user',
@@ -1342,42 +1724,46 @@ ${customInstructions ? `\n額外指令：${customInstructions}` : ''}
           },
         ];
 
-        let text = '';
-        if (providerConfig.authMethod === 'oauth' && providerConfig.accountId) {
-          text = await curlComplete({
-            messages,
-            model,
-            accessToken: providerConfig.apiKey,
-            accountId: providerConfig.accountId,
-          });
-        } else if (providerConfig.isOllama) {
-          text = await ollamaChatComplete({
-            baseUrl: providerConfig.baseUrl,
-            apiKey: providerConfig.apiKey,
-            messages,
-            model,
-            temperature: 1.0,
-            maxTokens: 300,
-          });
-        } else {
-          const client = aiService.getClient();
-          if (!client) {
-            return { success: false, error: { code: 'NO_PROVIDER', message: 'AI 客戶端未初始化' } };
+        // Single provider round-trip; called up to twice (one retry) when parsing
+        // comes back short. Routes through OAuth/curl, Ollama, or the OpenAI SDK.
+        async function requestOnce(): Promise<string> {
+          if (providerConfig!.authMethod === 'oauth' && providerConfig!.accountId) {
+            return curlComplete({
+              messages,
+              model,
+              accessToken: providerConfig!.apiKey,
+              accountId: providerConfig!.accountId,
+            });
+          } else if (providerConfig!.isOllama) {
+            return ollamaChatComplete({
+              baseUrl: providerConfig!.baseUrl,
+              apiKey: providerConfig!.apiKey,
+              messages,
+              model,
+              temperature: 1.0,
+              maxTokens: 300,
+            });
+          } else {
+            const client = aiService.getClient();
+            if (!client) {
+              throw new Error('AI 客戶端未初始化');
+            }
+            const response = await client.chat.completions.create({
+              model,
+              messages,
+              max_tokens: 300,
+              temperature: 1.0,
+            });
+            return response.choices[0]?.message?.content ?? '';
           }
-
-          const response = await client.chat.completions.create({
-            model,
-            messages,
-            max_tokens: 300,
-            temperature: 1.0,
-          });
-          text = response.choices[0]?.message?.content ?? '';
         }
-        const suggestions = text
-          .split('\n')
-          .map(line => line.replace(/^\d+[.、)\]]\s*/, '').trim())
-          .filter(line => line.length > 0)
-          .slice(0, 3);
+
+        let suggestions = parseSuggestions(await requestOnce());
+        // Auto-retry once if the model returned a malformed / short response.
+        if (suggestions.length < 3) {
+          const retry = parseSuggestions(await requestOnce());
+          if (retry.length > suggestions.length) suggestions = retry;
+        }
 
         return { success: true, data: { suggestions } };
       } catch (err) {

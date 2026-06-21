@@ -48,6 +48,38 @@ export interface GenerateRequest {
   modelOverride?: string;
 }
 
+// ===== 測試寫作效果（設定頁彈窗，獨立於專案） =====
+export interface TestStyle {
+  genre?: string;
+  perspective?: string;
+  tone?: string;
+  detailLevel?: string;
+  languageStyle?: string;
+  nsfw?: boolean;
+}
+
+export interface TestGenerateRequest {
+  worldview: string;
+  characterSettings: string;
+  guidance: string;
+  style: TestStyle;
+  modelOverride?: string;
+}
+
+export interface TestChunkPayload {
+  scenarioIndex: number;
+  delta: string;
+}
+
+export interface TestScenarioDonePayload {
+  scenarioIndex: number;
+}
+
+export interface TestErrorPayload {
+  scenarioIndex?: number;
+  error: { code: string; message: string };
+}
+
 export interface StreamChunkPayload {
   paragraphId: string;
   delta: string;
@@ -147,6 +179,27 @@ export interface SaveProviderRequest {
 export interface ProviderInfo extends Omit<AIProvider, 'createdAt' | 'updatedAt'> {
   hasApiKey: boolean;
   oauthEmail?: string;
+}
+
+export interface GetModelsRequest {
+  baseUrl: string;
+  apiKey?: string;
+  providerId?: string;
+}
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  contextLength?: number;
+  pricePrompt?: number;
+  priceCompletion?: number;
+  isFree: boolean;
+}
+
+export interface CreditsInfo {
+  totalCredits: number;
+  totalUsage: number;
+  remaining: number;
 }
 
 // ===== 自動儲存 =====

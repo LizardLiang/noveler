@@ -3,6 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { settingsApi, aiApi, oauthApi } from '@/lib/ipc';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { FontSizeControl } from '@/components/settings/FontSizeControl';
+import { TestStoryGeneratorModal } from '@/components/settings/TestStoryGeneratorModal';
+import { ModelPicker } from '@/components/settings/ModelPicker';
+import { OpenRouterCredits } from '@/components/settings/OpenRouterCredits';
 import { useTheme } from '@/hooks/useTheme';
 import { zhTW } from '@/i18n/zh-TW';
 import type { ProviderInfo, SaveProviderRequest, AuthMethod, ProviderType } from '@/types/ipc';
@@ -44,6 +47,7 @@ export function SettingsPage() {
   const { theme, setTheme } = useTheme();
   const [testingProvider, setTestingProvider] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ id: string; success: boolean; message: string } | null>(null);
+  const [showTestStory, setShowTestStory] = useState(false);
 
   // Add/Edit provider form state
   const [showAddProvider, setShowAddProvider] = useState(false);
@@ -246,13 +250,23 @@ export function SettingsPage() {
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
-        overflow: 'hidden auto',
-        padding: '24px 32px',
-        maxWidth: 800,
-        margin: '0 auto',
-        width: '100%',
+        minHeight: 0,
+        overflow: 'hidden',
       }}
     >
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          display: 'flex',
+          flexDirection: 'column',
+          padding: '24px 32px',
+          maxWidth: 800,
+          margin: '0 auto',
+          width: '100%',
+        }}
+      >
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 32 }}>
         <button
@@ -774,27 +788,23 @@ export function SettingsPage() {
               </div>
             )}
 
-            {/* Default model */}
-            <div>
-              <label style={{ fontSize: 13, color: 'var(--color-text-secondary)', display: 'block', marginBottom: 6 }}>
-                預設模型
-              </label>
-              <input
-                type="text"
-                value={newProvider.defaultModel}
-                onChange={e => setNewProvider(prev => ({ ...prev, defaultModel: e.target.value }))}
-                style={{
-                  width: '100%',
-                  padding: '8px 12px',
-                  borderRadius: 'var(--radius-md)',
-                  border: '1px solid var(--color-border)',
-                  background: 'var(--color-bg-secondary)',
-                  color: 'var(--color-text-primary)',
-                  fontSize: 14,
-                  outline: 'none',
-                }}
+            {/* Default model — free-text input + fetchable picker */}
+            <ModelPicker
+              baseUrl={newProvider.baseUrl}
+              apiKey={newProvider.apiKey}
+              providerId={editingProviderId ?? undefined}
+              value={newProvider.defaultModel}
+              onChange={model => setNewProvider(prev => ({ ...prev, defaultModel: model }))}
+            />
+
+            {/* OpenRouter credit balance */}
+            {newProvider.providerType === 'openrouter' && (
+              <OpenRouterCredits
+                baseUrl={newProvider.baseUrl}
+                apiKey={newProvider.apiKey}
+                providerId={editingProviderId ?? undefined}
               />
-            </div>
+            )}
 
             {!(newProvider.providerType === 'openai' && newProvider.authMethod === 'oauth' && !editingProviderId) && (
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
@@ -855,11 +865,36 @@ export function SettingsPage() {
             新增供應商
           </button>
         )}
+
+        {/* Test writing effect */}
+        <button
+          onClick={() => setShowTestStory(true)}
+          style={{
+            marginTop: 12,
+            padding: '10px 16px',
+            borderRadius: 'var(--radius-md)',
+            border: '1px solid var(--color-border)',
+            background: 'transparent',
+            color: 'var(--color-text-secondary)',
+            cursor: 'pointer',
+            fontSize: 14,
+            width: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 6,
+          }}
+        >
+          ✦ 測試寫作效果
+        </button>
       </section>
+
+      <TestStoryGeneratorModal open={showTestStory} onClose={() => setShowTestStory(false)} />
 
       {/* Version info */}
       <div style={{ marginTop: 'auto', paddingTop: 24, fontSize: 12, color: 'var(--color-text-muted)' }}>
         Noveler v{/* version */}1.0.0 — AI 互動小說生成器
+      </div>
       </div>
     </div>
   );
