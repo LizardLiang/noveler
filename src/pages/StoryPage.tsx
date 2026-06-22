@@ -10,6 +10,7 @@ import { ChatInput } from '@/components/story/ChatInput';
 import { ParagraphBlock } from '@/components/story/ParagraphBlock';
 import { ContextBudgetIndicator } from '@/components/story/ContextBudgetIndicator';
 import { StorySuggestions } from '@/components/story/StorySuggestions';
+import { OpeningInput } from '@/components/story/OpeningInput';
 import { SystemPromptEditor } from '@/components/settings/SystemPromptEditor';
 import { WorldRulesEditor } from '@/components/settings/WorldRulesEditor';
 import { WritingStyleConfig } from '@/components/settings/WritingStyleConfig';
@@ -32,6 +33,7 @@ export function StoryPage() {
     currentBranchId,
     setCurrentBranchId,
     setParagraphs,
+    addParagraph,
     updateParagraph,
     removeParagraph,
     setGenerating,
@@ -55,11 +57,15 @@ export function StoryPage() {
   const { loadAll } = useWorldMemoryStore();
 
   const [loading, setLoading] = useState(true);
+  const [openingCreating, setOpeningCreating] = useState(false);
   const [contextBudget, setContextBudget] = useState<ContextBudgetInfo | null>(null);
   const [truncationWarning, setTruncationWarning] = useState<{ count: number } | null>(null);
   const [showStorySettings, setShowStorySettings] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showStats, setShowStats] = useState(false);
+  const [compacting, setCompacting] = useState(false);
+  // Per-generation target word count override; undefined = use the project default.
+  const [genWordCount, setGenWordCount] = useState<number | undefined>(undefined);
   // Cascade delete dialog state
   const [cascadeDialog, setCascadeDialog] = useState<{
     paragraphId: string;
@@ -90,15 +96,15 @@ export function StoryPage() {
   }, []);
 
   // Fetch story suggestions
-  const fetchSuggestions = useCallback(async () => {
+  const fetchSuggestions = useCallback(async (force = false) => {
     if (!projectId || !currentBranchId) return;
     setSuggestionsLoading(true);
     try {
-      let result = await aiApi.suggestions({ projectId, branchId: currentBranchId });
+      let result = await aiApi.suggestions({ projectId, branchId: currentBranchId, force });
       // Retry once if the call succeeded but yielded nothing (complements the
       // backend retry for the rare double-empty case).
       if (result.success && result.data.suggestions.length === 0) {
-        result = await aiApi.suggestions({ projectId, branchId: currentBranchId });
+        result = await aiApi.suggestions({ projectId, branchId: currentBranchId, force: true });
       }
       if (result.success && result.data.suggestions.length > 0) {
         setSuggestions(result.data.suggestions);
@@ -109,6 +115,29 @@ export function StoryPage() {
       setSuggestionsLoading(false);
     }
   }, [projectId, currentBranchId, setSuggestions, setSuggestionsLoading]);
+
+  // Manually compact older paragraphs into the running 前情提要 summary.
+  const handleCompact = useCallback(async () => {
+    if (!projectId || !currentBranchId || compacting) return;
+    if (!window.confirm(zhTW.chat.compactConfirm)) return;
+    setCompacting(true);
+    try {
+      const result = await aiApi.compact({ projectId, branchId: currentBranchId });
+      if (result.success) {
+        window.alert(
+          result.data.compactedCount > 0
+            ? zhTW.chat.compactDone.replace('{count}', String(result.data.compactedCount))
+            : zhTW.chat.compactNothing,
+        );
+      } else {
+        window.alert(`${zhTW.chat.compactFailed}：${result.error.message}`);
+      }
+    } catch (e) {
+      window.alert(`${zhTW.chat.compactFailed}：${String(e)}`);
+    } finally {
+      setCompacting(false);
+    }
+  }, [projectId, currentBranchId, compacting]);
 
   const streamOptions = useMemo(() => ({
     onContextBudget: handleContextBudget,
@@ -289,6 +318,7 @@ export function StoryPage() {
       projectId,
       branchId: currentBranchId ?? '',
       userMessage: message,
+      targetWordCount: genWordCount,
     });
 
     if (!result.success) {
@@ -306,7 +336,29 @@ export function StoryPage() {
         }
       }
     }
-  }, [projectId, isGenerating, currentBranchId, setGenerating, setCurrentBranchId, clearSuggestions]);
+  }, [projectId, isGenerating, currentBranchId, genWordCount, setGenerating, setCurrentBranchId, clearSuggestions]);
+
+  // Create opening (開場白) — save the user's opening prose as the story's first
+  // paragraph. The suggestions effect (watching paragraphs.length) then auto-fetches
+  // direction options, and picking one continues the story via handleSend.
+  const handleOpeningSubmit = useCallback(async (text: string) => {
+    if (!projectId || isGenerating || openingCreating) return;
+    setOpeningCreating(true);
+    shouldAutoScrollRef.current = true;
+    try {
+      const result = await paragraphApi.createOpening(projectId, currentBranchId ?? '', text);
+      if (result.success) {
+        const para = result.data as unknown as ParagraphMeta;
+        if (!currentBranchId) setCurrentBranchId(para.branchId);
+        addParagraph(para);
+        setParagraphContent(para.id, text);
+      } else {
+        setGenerationError(result.error.message);
+      }
+    } finally {
+      setOpeningCreating(false);
+    }
+  }, [projectId, isGenerating, openingCreating, currentBranchId, setCurrentBranchId, addParagraph, setParagraphContent, setGenerationError]);
 
   // Delete paragraph — with cascade dialog for associated world memory
   const handleDelete = useCallback(async (paragraphId: string) => {
@@ -350,12 +402,13 @@ export function StoryPage() {
       branchId: currentBranchId,
       userMessage: '',
       targetParagraphId: paragraphId,
+      targetWordCount: genWordCount,
     });
 
     if (!result.success) {
       setGenerating(false);
     }
-  }, [projectId, currentBranchId, isGenerating, setGenerating]);
+  }, [projectId, currentBranchId, isGenerating, genWordCount, setGenerating]);
 
   // Rollback
   const handleRollback = useCallback(async (paragraphId: string) => {
@@ -598,6 +651,31 @@ export function StoryPage() {
           </svg>
         </button>
 
+        {/* Compact story (前情提要) */}
+        {hasActiveProvider && paragraphs.length > 0 && (
+          <button
+            onClick={handleCompact}
+            disabled={compacting}
+            title={zhTW.chat.compactTitle}
+            style={{
+              background: 'transparent',
+              border: '1px solid transparent',
+              color: compacting ? 'var(--color-accent)' : 'var(--color-text-tertiary)',
+              cursor: compacting ? 'wait' : 'pointer',
+              padding: '4px 6px',
+              borderRadius: 'var(--radius-sm)',
+              display: 'flex',
+              alignItems: 'center',
+              opacity: compacting ? 0.6 : 1,
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <path d="M2 3h10M2 7h10M2 11h10" />
+              <path d="M9.5 5.5l-2 1.5 2 1.5" />
+            </svg>
+          </button>
+        )}
+
         {/* Active provider badge */}
         {hasActiveProvider ? (
           <span
@@ -835,9 +913,18 @@ export function StoryPage() {
               <p style={{ margin: 0, fontSize: 15, fontWeight: 500 }}>開始你的故事</p>
               <p style={{ margin: '8px 0 0', fontSize: 13 }}>
                 {hasActiveProvider
-                  ? '在下方輸入框中輸入故事提示，按 Enter 開始生成...'
+                  ? '在下方輸入框中輸入故事提示，按 Enter 開始生成，或以開場白起頭。'
                   : '請先在「設定」中配置 AI 供應商'}
               </p>
+
+              {hasActiveProvider && (
+                <div style={{ marginTop: 28, width: '100%', display: 'flex', justifyContent: 'center' }}>
+                  <OpeningInput
+                    onSubmit={handleOpeningSubmit}
+                    creating={openingCreating}
+                  />
+                </div>
+              )}
             </div>
           )}
 
@@ -874,13 +961,14 @@ export function StoryPage() {
               loading={suggestionsLoading}
               onSelect={(suggestion) => handleSend(suggestion)}
               onContinue={() => handleSend('繼續故事')}
-              onRetry={fetchSuggestions}
+              onRetry={() => fetchSuggestions(true)}
             />
           )}
 
-          {/* Continue button when no suggestions loaded yet */}
+          {/* Continue button when no suggestions loaded yet — plus a regenerate
+              button so skipped/empty suggestions can always be retried */}
           {!isGenerating && paragraphs.length > 0 && hasActiveProvider && !suggestionsLoading && suggestions.length === 0 && (
-            <div style={{ padding: '12px 0' }}>
+            <div style={{ padding: '12px 0', display: 'flex', gap: 8 }}>
               <button
                 onClick={() => handleSend('繼續故事')}
                 style={{
@@ -888,7 +976,7 @@ export function StoryPage() {
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: 8,
-                  width: '100%',
+                  flex: 1,
                   padding: '10px 20px',
                   borderRadius: 'var(--radius-md)',
                   border: '1px solid var(--color-border)',
@@ -914,6 +1002,41 @@ export function StoryPage() {
                   <path d="M3 8h10M9 4l4 4-4 4" />
                 </svg>
                 {zhTW.chat.continueStory}
+              </button>
+              <button
+                onClick={() => fetchSuggestions(true)}
+                title={zhTW.chat.suggestionsRetry}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                  padding: '10px 16px',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1px solid var(--color-border)',
+                  background: 'var(--color-surface)',
+                  color: 'var(--color-text-secondary)',
+                  cursor: 'pointer',
+                  fontSize: 14,
+                  fontWeight: 500,
+                  transition: 'all var(--transition-fast)',
+                }}
+                onMouseEnter={e => {
+                  (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--color-accent)';
+                  (e.currentTarget as HTMLButtonElement).style.color = 'var(--color-accent)';
+                  (e.currentTarget as HTMLButtonElement).style.background = 'var(--color-accent-subtle)';
+                }}
+                onMouseLeave={e => {
+                  (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--color-border)';
+                  (e.currentTarget as HTMLButtonElement).style.color = 'var(--color-text-secondary)';
+                  (e.currentTarget as HTMLButtonElement).style.background = 'var(--color-surface)';
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M2 8A6 6 0 1 1 8 14" />
+                  <polyline points="2,4 2,8 6,8" />
+                </svg>
+                {zhTW.chat.suggestionsRetry}
               </button>
             </div>
           )}
@@ -1049,6 +1172,8 @@ export function StoryPage() {
         onCancel={cancelGeneration}
         isGenerating={isGenerating}
         disabled={!hasActiveProvider}
+        wordCount={genWordCount}
+        onWordCountChange={setGenWordCount}
       />
 
       {/* Story stats modal */}

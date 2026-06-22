@@ -184,6 +184,8 @@ export interface GenerateRequest {
   branchId: string;
   userMessage: string;
   modelOverride?: string;
+  /** Per-generation target word count; overrides the project default when set. */
+  targetWordCount?: number;
 }
 
 // ===== Test Story Generator (設定頁彈窗，獨立於專案) =====
@@ -246,10 +248,24 @@ export interface ContextBudgetPayload {
 export interface SuggestionsRequest {
   projectId: string;
   branchId: string;
+  // Bypass the per-branch suggestions cache (manual regenerate).
+  force?: boolean;
 }
 
 export interface SuggestionsResponse {
   suggestions: string[];
+}
+
+export interface CompactRequest {
+  projectId: string;
+  branchId: string;
+}
+
+export interface CompactResponse {
+  /** The merged running summary after compaction. */
+  summary: string;
+  /** How many paragraphs were folded into the summary this run. */
+  compactedCount: number;
 }
 
 export interface StreamCompletePayload {

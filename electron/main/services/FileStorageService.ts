@@ -2,6 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ParagraphMetadataFile } from '../../shared/types.js';
 
+// Cached story-direction suggestions, invalidated when the branch tip advances.
+interface SuggestionsCache {
+  tipId: string;
+  count: number;
+  suggestions: string[];
+}
+
 class FileStorageService {
   // Validate a storage path is writable
   validateStoragePath(storagePath: string): { valid: boolean; error?: string } {
@@ -112,6 +119,31 @@ class FileStorageService {
     const summariesDir = path.join(projectPath, 'summaries');
     fs.mkdirSync(summariesDir, { recursive: true });
     fs.writeFileSync(path.join(summariesDir, `${branchId}-summary.md`), content, 'utf-8');
+  }
+
+  // Read cached story-direction suggestions for a branch. Returns null when no
+  // cache exists or the file is unreadable/corrupt.
+  readSuggestionsCache(projectPath: string, branchId: string): SuggestionsCache | null {
+    const filePath = path.join(projectPath, 'summaries', `${branchId}-suggestions.json`);
+    if (!fs.existsSync(filePath)) return null;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as SuggestionsCache;
+      if (typeof parsed.tipId !== 'string' || !Array.isArray(parsed.suggestions)) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  // Cache story-direction suggestions for a branch, keyed by the branch tip.
+  writeSuggestionsCache(projectPath: string, branchId: string, cache: SuggestionsCache): void {
+    const summariesDir = path.join(projectPath, 'summaries');
+    fs.mkdirSync(summariesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(summariesDir, `${branchId}-suggestions.json`),
+      JSON.stringify(cache),
+      'utf-8',
+    );
   }
 
   // Delete project directory

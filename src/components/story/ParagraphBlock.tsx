@@ -14,7 +14,8 @@ const STATUS_LABELS: Record<ParagraphMeta['status'], string> = {
 const TYPE_LABELS: Record<ParagraphMeta['type'], string> = {
   user: zhTW.paragraph.user,
   ai: zhTW.paragraph.ai,
-  system: zhTW.paragraph.system,
+  // 'system' paragraphs are user-authored openings (開場白); label them as such.
+  system: zhTW.paragraph.opening,
 };
 
 interface ParagraphBlockProps {

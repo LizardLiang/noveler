@@ -43,6 +43,7 @@ export const IPC_CHANNELS = {
   PARAGRAPH_SWITCH_VERSION: 'paragraph:switchVersion',
   PARAGRAPH_ROLLBACK: 'paragraph:rollback',
   PARAGRAPH_GET_LINKED_WORLD_MEMORY: 'paragraph:getLinkedWorldMemory',
+  PARAGRAPH_CREATE_OPENING: 'paragraph:createOpening',
 
   // 世界記憶
   WORLD_MEMORY_GET_CHARACTERS: 'worldMemory:getCharacters',
@@ -113,6 +114,9 @@ export const IPC_CHANNELS = {
 
   // 故事建議
   AI_SUGGESTIONS: 'ai:suggestions',
+
+  // 故事壓縮（前情提要）
+  AI_COMPACT: 'ai:compact',
 
   // 上下文預算
   CONTEXT_BUDGET_GET: 'contextBudget:get',

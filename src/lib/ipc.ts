@@ -15,6 +15,8 @@ import type {
   ContextBudgetInfo,
   SuggestionsRequest,
   SuggestionsResponse,
+  CompactRequest,
+  CompactResponse,
   TestGenerateRequest,
   GetModelsRequest,
   ModelInfo,
@@ -106,6 +108,8 @@ export const aiApi = {
     ipcInvoke<IpcResult<CreditsInfo>>('ai:getCredits', req),
   suggestions: (req: SuggestionsRequest) =>
     ipcInvoke<IpcResult<SuggestionsResponse>>('ai:suggestions', req),
+  compact: (req: CompactRequest) =>
+    ipcInvoke<IpcResult<CompactResponse>>('ai:compact', req),
   testGenerate: (req: TestGenerateRequest) =>
     ipcInvoke<IpcResult<void>>('ai:testGenerate', req),
   testGenerateCancel: () =>
@@ -122,6 +126,8 @@ export const paragraphApi = {
     ipcInvoke<IpcResult<void>>('paragraph:delete', projectId, branchId, paragraphId, cascade),
   getLinkedWorldMemory: (projectId: string, paragraphId: string) =>
     ipcInvoke<IpcResult<{ type: string; name: string }[]>>('paragraph:getLinkedWorldMemory', projectId, paragraphId),
+  createOpening: (projectId: string, branchId: string, content: string) =>
+    ipcInvoke<IpcResult<ParagraphMeta>>('paragraph:createOpening', projectId, branchId, content),
   switchVersion: (projectId: string, paragraphId: string, version: number) =>
     ipcInvoke<IpcResult<void>>('paragraph:switchVersion', projectId, paragraphId, version),
   rollback: (projectId: string, branchId: string, paragraphId: string) =>

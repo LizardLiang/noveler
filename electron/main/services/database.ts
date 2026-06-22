@@ -206,6 +206,7 @@ CREATE TABLE IF NOT EXISTS events (
     impact          TEXT DEFAULT '',
     participating_characters TEXT DEFAULT '[]',
     status          TEXT NOT NULL DEFAULT 'occurred',
+    source          TEXT NOT NULL DEFAULT 'author',
     paragraph_id    TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
@@ -396,6 +397,17 @@ function migrateProjectDatabase(db: ProjectDatabase): void {
     ).all();
     if (eventStatusCols.length === 0) {
       db.exec("ALTER TABLE events ADD COLUMN status TEXT NOT NULL DEFAULT 'occurred'");
+    }
+  } catch {
+    // Table may not exist yet (first run) — schema DDL creates it with the column
+  }
+
+  try {
+    const sourceCols = db.prepare(
+      "SELECT name FROM pragma_table_info('events') WHERE name='source'",
+    ).all();
+    if (sourceCols.length === 0) {
+      db.exec("ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'author'");
     }
   } catch {
     // Table may not exist yet (first run) — schema DDL creates it with the column

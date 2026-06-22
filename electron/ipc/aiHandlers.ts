@@ -3,9 +3,11 @@ import type { IpcMainInvokeEvent } from 'electron';
 import { IPC_CHANNELS } from './channels.js';
 import { getAIProviderService } from '../main/services/AIProviderService.js';
 import { getContextManager } from '../main/services/ContextManager.js';
+import type { ParagraphContext, AssembledContext } from '../main/services/ContextManager.js';
 import { getParagraphService } from '../main/services/ParagraphService.js';
 import { getWorldChangeParser } from '../main/services/WorldChangeParser.js';
 import { getWorldMemoryService } from '../main/services/WorldMemoryService.js';
+import { getFileStorageService } from '../main/services/FileStorageService.js';
 import { getGlobalDatabase } from '../main/services/database.js';
 import { getCryptoService } from '../main/services/CryptoService.js';
 import { getOAuthService } from '../main/services/OAuthService.js';
@@ -15,6 +17,7 @@ import type { OAuthTokens } from '../shared/types.js';
 import { getProjectStoragePath, getOpenProject } from './projectHandlers.js';
 import { refineDialogue, containsDialogue, getDialogueEditorSettings } from '../main/services/DialogueEditorService.js';
 import type { CharacterForRoster, DialogueEditorSettings } from '../main/services/DialogueEditorService.js';
+import { getDirectorService } from '../main/services/DirectorService.js';
 import {
   WORLD_MEMORY_TOOLS,
   executeWorldMemoryQuery,
@@ -24,7 +27,7 @@ import type { QueryWorldMemoryArgs } from '../main/services/WorldMemoryTools.js'
 import { applyWorldChange } from './worldMemoryHandlers.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import type { IpcResult } from '../shared/types.js';
-import type { GenerateRequest, StreamCompletePayload, ContextBudgetPayload, SuggestionsRequest, SuggestionsResponse, TestGenerateRequest, TestStyle } from '../shared/types.js';
+import type { GenerateRequest, StreamCompletePayload, ContextBudgetPayload, SuggestionsRequest, SuggestionsResponse, CompactRequest, CompactResponse, TestGenerateRequest, TestStyle } from '../shared/types.js';
 import type { GetModelsRequest, ModelInfo, CreditsInfo } from '../shared/types.js';
 
 // Track active generation controllers per project
@@ -89,6 +92,27 @@ function getCustomInstructions(projectId: string): string {
 }
 
 /**
+ * Read the project's configured target word count per paragraph from the writing_style
+ * settings object. Returns undefined when unset/invalid so the prompt keeps its default
+ * 200-500 字 range and existing projects are unaffected.
+ */
+function getWordCountTarget(projectId: string): number | undefined {
+  try {
+    const projectDb = getOpenProject(projectId);
+    if (!projectDb) return undefined;
+    const row = projectDb.prepare(
+      "SELECT value FROM project_settings WHERE key='writing_style'",
+    ).get() as { value: string } | undefined;
+    if (!row) return undefined;
+    const style = JSON.parse(String(row.value)) as Record<string, unknown>;
+    const n = Number(style.wordCount);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Read the project's world rules (世界規則) from project_settings.
  * Injected into the system prompt as the highest-priority, must-not-break world setting.
  */
@@ -126,6 +150,48 @@ function buildWorldMemorySummary(
   }
 }
 
+type ActiveProvider = NonNullable<ReturnType<typeof getActiveProvider>>;
+
+/**
+ * One-shot (non-streamed) completion shared by suggestions, the Director pre-step,
+ * and compaction. Routes through the same three transports as generation —
+ * OAuth/curl (primary), native Ollama, or the OpenAI SDK. Assumes the caller has
+ * already configured aiService with `providerConfig`.
+ */
+async function completeOnce(
+  providerConfig: ActiveProvider,
+  messages: ChatCompletionMessageParam[],
+  opts: { model: string; maxTokens: number; temperature: number },
+): Promise<string> {
+  if (providerConfig.authMethod === 'oauth' && providerConfig.accountId) {
+    return curlComplete({
+      messages,
+      model: opts.model,
+      accessToken: providerConfig.apiKey,
+      accountId: providerConfig.accountId,
+    });
+  } else if (providerConfig.isOllama) {
+    return ollamaChatComplete({
+      baseUrl: providerConfig.baseUrl,
+      apiKey: providerConfig.apiKey,
+      messages,
+      model: opts.model,
+      temperature: opts.temperature,
+      maxTokens: opts.maxTokens,
+    });
+  }
+  const client = getAIProviderService().getClient();
+  if (!client) throw new Error('AI 客戶端未初始化');
+  const response = await client.chat.completions.create({
+    model: opts.model,
+    messages,
+    max_tokens: opts.maxTokens,
+    temperature: opts.temperature,
+  });
+  return response.choices[0]?.message?.content ?? '';
+}
+
+
 function buildBudgetPayload(assembled: import('../main/services/ContextManager.js').AssembledContext): ContextBudgetPayload {
   const totalUsed = assembled.used.system + assembled.used.worldMemory + assembled.used.storyHistory + assembled.used.userInput;
   const percentage = assembled.budget.totalTokens > 0
@@ -144,6 +210,96 @@ function buildBudgetPayload(assembled: import('../main/services/ContextManager.j
   };
   lastBudgetPayload = payload;
   return payload;
+}
+
+/**
+ * Fold older story text into the running 前情提要 summary via the editor model.
+ * Shared by manual compaction (ai:compact) and the auto-compaction that keeps
+ * generation from ever trimming history. Returns the merged summary text; the
+ * caller persists it.
+ */
+async function foldStoryIntoSummary(
+  providerConfig: ActiveProvider,
+  existingSummary: string,
+  olderStory: string,
+): Promise<string> {
+  const messages: ChatCompletionMessageParam[] = [
+    {
+      role: 'system',
+      content: `你是一位小說編輯，負責把長篇故事壓縮成「前情提要」，供後續續寫時參考。
+請把內容濃縮成連貫、條理清楚的劇情摘要，保留：主線進展、關鍵轉折、角色狀態與關係變化、尚未解決的伏筆與懸念。
+省略細節描寫與重複內容。用繁體中文，控制在約 400-600 字。只輸出摘要本身，不要前言或標題。`,
+    },
+    {
+      role: 'user',
+      content: existingSummary
+        ? `已有的前情提要：\n${existingSummary}\n\n以下是接續的新劇情，請與上面的前情提要整合，更新成一份完整、連貫的前情提要：\n\n${olderStory}`
+        : `請為以下劇情撰寫前情提要：\n\n${olderStory}`,
+    },
+  ];
+
+  return (await completeOnce(providerConfig, messages, {
+    model: providerConfig.defaultModel,
+    maxTokens: 1200,
+    temperature: 0.3,
+  })).trim();
+}
+
+/**
+ * Assemble the prompt, but NEVER trim the story when it overflows the budget —
+ * always compact instead. While the assembled context reports truncation, the
+ * oldest overflowing paragraphs are folded into the running 前情提要 summary and
+ * dropped from the working history, then the prompt is re-assembled. Repeats
+ * until everything fits (or no foldable history remains). The summary is
+ * persisted as it grows.
+ *
+ * `assemble` re-runs ContextManager.assemblePrompt with the given history and
+ * summary; the caller supplies it so each call site keeps its own options.
+ */
+async function assembleNeverTrim(
+  providerConfig: ActiveProvider,
+  projectPath: string,
+  branchId: string,
+  history: ParagraphContext[],
+  initialSummary: string,
+  assemble: (history: ParagraphContext[], summary: string) => AssembledContext,
+): Promise<{ assembled: AssembledContext; history: ParagraphContext[]; summary: string }> {
+  const fileStorage = getFileStorageService();
+  let workingHistory = history;
+  let summary = initialSummary;
+  let assembled = assemble(workingHistory, summary);
+
+  // Guard bounds the loop; each pass folds at least the reported overflow.
+  let guard = 0;
+  while (
+    assembled.isTruncated &&
+    assembled.truncatedCount > 0 &&
+    workingHistory.length > 1 &&
+    guard < 50
+  ) {
+    guard++;
+    // Always fold at least one paragraph so we make progress even if the
+    // recent tail alone still overflows the history budget.
+    const foldCount = Math.min(
+      Math.max(assembled.truncatedCount, 1),
+      workingHistory.length - 1,
+    );
+    const toFold = workingHistory.slice(0, foldCount);
+    const olderStory = toFold
+      .map(p => p.content.split('---WORLD_CHANGES---')[0].trimEnd())
+      .filter(Boolean)
+      .join('\n\n');
+
+    if (olderStory) {
+      summary = await foldStoryIntoSummary(providerConfig, summary, olderStory);
+      if (summary) fileStorage.writeSummary(projectPath, branchId, summary);
+    }
+
+    workingHistory = workingHistory.slice(foldCount);
+    assembled = assemble(workingHistory, summary);
+  }
+
+  return { assembled, history: workingHistory, summary };
 }
 
 // Story generation runs hot for livelier prose; world-change extraction runs cold for reliable JSON
@@ -193,12 +349,22 @@ const SUGGESTION_PREAMBLE_RE = /[:：]\s*$/;
  * the model does not reliably honor the "plain 3 lines" instruction.
  */
 function parseSuggestions(text: string): string[] {
-  const lines = text
+  const raw = text
     .split('\n')
     .map(line => line.replace(SUGGESTION_MARKER_RE, '').trim())
+    .filter(line => line.length > 0);
+  // A lone colon-terminated line ("好的，這是三個走向：") is preamble noise, not an
+  // option — yield nothing so the caller retries instead of showing garbage.
+  if (raw.length === 1 && SUGGESTION_PREAMBLE_RE.test(raw[0])) return [];
+  // Strip a leading preamble line only when a full set of options still follows it
+  // (>=4 lines = preamble + 3). The previous per-line filter discarded EVERY line
+  // ending in a colon, so options phrased as labels ("衝突：") collapsed to [].
+  const body = raw.length >= 4 && SUGGESTION_PREAMBLE_RE.test(raw[0]) ? raw.slice(1) : raw;
+  // Strip a trailing colon from label-style options instead of dropping them.
+  return body
+    .map(line => line.replace(SUGGESTION_PREAMBLE_RE, '').trim())
     .filter(line => line.length > 0)
-    .filter(line => !SUGGESTION_PREAMBLE_RE.test(line));
-  return lines.slice(0, 3);
+    .slice(0, 3);
 }
 
 // NSFW（成人內容）模式：僅在使用者明確開啟時注入。放在風格指令最前、優先級最高，
@@ -644,18 +810,56 @@ export function registerAIHandlers(): void {
         // not use the OpenAI tools preflight, so feed it the smart summary directly.
         const useTools = !!worldDirectory && !providerConfig.isOllama;
 
-        // Assemble context with structured prompt
-        const assembled = contextManager.assemblePrompt({
+        // Set up generation-token write guard (FR-D013) before the director pre-step
+        // so the token is available for the planner's stale-write guard.
+        const myToken = (generationTokens.get(req.projectId) ?? 0) + 1;
+        generationTokens.set(req.projectId, myToken);
+
+        // Director pre-step: optionally reconcile the AI roadmap, then steer the
+        // next paragraph toward the nearest planned event.
+        // Running 前情提要 (manual compaction) preserves context the budget would truncate.
+        const directorDirective = await getDirectorService().planAndDirect({
+          providerConfig,
           model,
-          systemPrompt: '',
-          customInstructions: getCustomInstructions(req.projectId),
+          db: projectDb,
+          projectId: req.projectId,
+          branchId: effectiveBranchId,
+          recentStory: historyContext.slice(-8).map(h => h.content).join('\n\n'),
+          generationToken: myToken,
+          isCurrentToken: (pid, tok) => generationTokens.get(pid) === tok,
+          plan: true,
           worldRules: getWorldRules(req.projectId),
-          writingStyleHints: getWritingStyleHints(req.projectId),
-          worldDirectory: useTools ? worldDirectory : '',
-          worldMemorySummary: useTools ? '' : worldMemorySummary,
-          storyHistory: historyContext,
-          userInput: req.userMessage,
+          aiClient: aiService.getClient(),
         });
+        let storySummary = getFileStorageService().readSummary(projectPath, effectiveBranchId);
+
+        // Per-generation override wins over the project default.
+        const targetWordCount = req.targetWordCount ?? getWordCountTarget(req.projectId);
+
+        // Assemble context with structured prompt. Never trim the story when it
+        // overflows the budget — fold older paragraphs into 前情提要 and re-assemble.
+        const assembleGen = (history: ParagraphContext[], summary: string) =>
+          contextManager.assemblePrompt({
+            model,
+            systemPrompt: '',
+            customInstructions: getCustomInstructions(req.projectId),
+            worldRules: getWorldRules(req.projectId),
+            writingStyleHints: getWritingStyleHints(req.projectId),
+            worldDirectory: useTools ? worldDirectory : '',
+            worldMemorySummary: useTools ? '' : worldMemorySummary,
+            storyHistory: history,
+            userInput: req.userMessage,
+            directorDirective,
+            storySummary: summary,
+            targetWordCount,
+          });
+
+        const compacted = await assembleNeverTrim(
+          providerConfig, projectPath, effectiveBranchId, historyContext, storySummary, assembleGen,
+        );
+        const assembled = compacted.assembled;
+        const effectiveHistory = compacted.history;
+        storySummary = compacted.summary;
 
         // Create AI paragraph (placeholder, will be updated on stream end)
         const aiParagraph = paragraphService.createParagraph(projectDb, {
@@ -679,10 +883,8 @@ export function registerAIHandlers(): void {
           meta: { ...aiParagraph, status: 'generating' },
         });
 
-        // Set up abort controller + generation-token write guard (FR-D013)
+        // Set up abort controller
         const controller = new AbortController();
-        const myToken = (generationTokens.get(req.projectId) ?? 0) + 1;
-        generationTokens.set(req.projectId, myToken);
         activeControllers.set(req.projectId, controller);
 
         // Preflight: let AI query world memory via tools if data exists
@@ -741,8 +943,11 @@ export function registerAIHandlers(): void {
               writingStyleHints: getWritingStyleHints(req.projectId),
               worldDirectory: '',
               worldMemorySummary,
-              storyHistory: historyContext,
+              storyHistory: effectiveHistory,
               userInput: req.userMessage,
+              directorDirective,
+              storySummary,
+              targetWordCount,
             });
             finalMessages = fallbackAssembled.messages;
           }
@@ -1402,17 +1607,33 @@ export function registerAIHandlers(): void {
         // Ollama uses the native path (no OpenAI tools preflight) — feed it the summary.
         const useToolsRegen = !!worldDirectoryRegen && !providerConfig.isOllama;
 
-        const assembled = contextManager.assemblePrompt({
-          model,
-          systemPrompt: '',
-          customInstructions: getCustomInstructions(req.projectId),
-          worldRules: getWorldRules(req.projectId),
-          writingStyleHints: getWritingStyleHints(req.projectId),
-          worldDirectory: useToolsRegen ? worldDirectoryRegen : '',
-          worldMemorySummary: useToolsRegen ? '' : worldMemorySummaryRegen,
-          storyHistory: historyContext,
-          userInput: userMsg,
-        });
+        // Per-generation override wins over the project default.
+        const targetWordCount = req.targetWordCount ?? getWordCountTarget(req.projectId);
+
+        let storySummaryRegen = getFileStorageService().readSummary(projectPath, req.branchId);
+
+        // Never trim the story on overflow — fold older paragraphs into 前情提要.
+        const assembleRegen = (history: ParagraphContext[], summary: string) =>
+          contextManager.assemblePrompt({
+            model,
+            systemPrompt: '',
+            customInstructions: getCustomInstructions(req.projectId),
+            worldRules: getWorldRules(req.projectId),
+            writingStyleHints: getWritingStyleHints(req.projectId),
+            worldDirectory: useToolsRegen ? worldDirectoryRegen : '',
+            worldMemorySummary: useToolsRegen ? '' : worldMemorySummaryRegen,
+            storyHistory: history,
+            userInput: userMsg,
+            storySummary: summary,
+            targetWordCount,
+          });
+
+        const compactedRegen = await assembleNeverTrim(
+          providerConfig, projectPath, req.branchId, historyContext, storySummaryRegen, assembleRegen,
+        );
+        const assembled = compactedRegen.assembled;
+        const effectiveHistoryRegen = compactedRegen.history;
+        storySummaryRegen = compactedRegen.summary;
 
         // Update the target paragraph status
         paragraphService.updateStatus(regenProjectDb, req.targetParagraphId, 'generating');
@@ -1481,8 +1702,10 @@ export function registerAIHandlers(): void {
               writingStyleHints: getWritingStyleHints(req.projectId),
               worldDirectory: '',
               worldMemorySummary: worldMemorySummaryRegen,
-              storyHistory: historyContext,
+              storyHistory: effectiveHistoryRegen,
               userInput: userMsg,
+              storySummary: storySummaryRegen,
+              targetWordCount,
             });
             regenFinalMessages = fallback.messages;
           }
@@ -1692,9 +1915,24 @@ export function registerAIHandlers(): void {
         const model = providerConfig.defaultModel;
         const allParagraphs = paragraphService.listParagraphs(suggestProjectDb, req.branchId);
 
-        const recentParagraphs = allParagraphs
-          .filter(p => p.status !== 'detached')
-          .slice(-8);
+        const activeParagraphs = allParagraphs.filter(p => p.status !== 'detached');
+
+        // Suggestions only go stale when the branch tip advances. Reuse the
+        // cached set on reentry so opening the same story doesn't burn a fresh
+        // AI call every time. `force` (manual regenerate) bypasses the cache.
+        const tipId = activeParagraphs.length > 0
+          ? activeParagraphs[activeParagraphs.length - 1].id
+          : '';
+        const tipCount = activeParagraphs.length;
+        const fileStorage = getFileStorageService();
+        if (!req.force) {
+          const cached = fileStorage.readSuggestionsCache(projectPath, req.branchId);
+          if (cached && cached.tipId === tipId && cached.count === tipCount && cached.suggestions.length >= 3) {
+            return { success: true, data: { suggestions: cached.suggestions } };
+          }
+        }
+
+        const recentParagraphs = activeParagraphs.slice(-8);
 
         const recentTexts: string[] = [];
         for (const para of recentParagraphs) {
@@ -1705,64 +1943,72 @@ export function registerAIHandlers(): void {
           }
         }
 
-        const storyContext = recentTexts.join('\n\n');
+        const recentStory = recentTexts.join('\n\n');
+
+        // Stop generating in a vacuum: pull the same context normal generation uses —
+        // world memory, world rules, writing style, prior 前情提要 — plus a Director
+        // directive so at least one option pushes toward the planned roadmap.
+        const worldMemorySummary = buildWorldMemorySummary(
+          worldMemoryService, req.projectId, req.branchId, recentStory,
+        );
+        const worldRules = getWorldRules(req.projectId);
+        const writingStyleHints = getWritingStyleHints(req.projectId);
+        const priorSummary = getFileStorageService().readSummary(projectPath, req.branchId);
         const customInstructions = getCustomInstructions(req.projectId);
+        const directorDirective = await getDirectorService().planAndDirect({
+          providerConfig,
+          model,
+          db: suggestProjectDb,
+          projectId: req.projectId,
+          branchId: req.branchId,
+          recentStory,
+          // plan=false: reconcile path is never reached, so token is unused here.
+          // WARNING: do NOT change plan to true — () => true would bypass the token guard
+          // and allow stale writes from the suggestions path to corrupt the director roadmap.
+          generationToken: 0,
+          isCurrentToken: () => true,
+          plan: false,
+          worldRules,
+          aiClient: aiService.getClient(),
+        });
+
+        const contextParts: string[] = [];
+        if (priorSummary) contextParts.push(`【前情提要】\n${priorSummary}`);
+        if (worldMemorySummary) contextParts.push(`【世界記憶】\n${worldMemorySummary}`);
+        if (directorDirective) contextParts.push(`【導演指示（建議須朝此劇情方向推進）】\n${directorDirective}`);
+        contextParts.push(`【故事近況】\n${recentStory}`);
+        const storyContext = contextParts.join('\n\n');
+
+        const systemContent = `你是一個互動小說助手。根據以下故事上下文，生成 3 個可能的故事走向選項。
+每個選項應該是一句簡短描述（15-30字），暗示接下來的劇情方向。
+選項之間應該提供不同類型的發展可能，例如：衝突、探索、對話、轉折。${directorDirective ? '\n重要：至少要有一個選項能讓故事朝「導演指示」所指的規劃劇情推進。' : ''}${worldRules ? `\n\n本作世界規則（不可違背）：\n${worldRules}` : ''}${writingStyleHints ? `\n\n文風參考：\n${writingStyleHints}` : ''}${customInstructions ? `\n\n額外指令：${customInstructions}` : ''}
+
+回覆格式：只回覆恰好 3 行文字，每行一個選項。不要前言、不要結語、不要編號、不要項目符號、不要 markdown，也不要任何其他文字。`;
 
         const messages: ChatCompletionMessageParam[] = [
-          {
-            role: 'system',
-            content: `你是一個互動小說助手。根據以下故事上下文，生成 3 個可能的故事走向選項。
-每個選項應該是一句簡短描述（15-30字），暗示接下來的劇情方向。
-選項之間應該提供不同類型的發展可能，例如：衝突、探索、對話、轉折。
-${customInstructions ? `\n額外指令：${customInstructions}` : ''}
-
-回覆格式：只回覆恰好 3 行文字，每行一個選項。不要前言、不要結語、不要編號、不要項目符號、不要 markdown，也不要任何其他文字。`,
-          },
-          {
-            role: 'user',
-            content: `故事上下文：\n\n${storyContext}\n\n請生成 3 個故事走向選項。`,
-          },
+          { role: 'system', content: systemContent },
+          { role: 'user', content: `故事上下文：\n\n${storyContext}\n\n請生成 3 個故事走向選項。` },
         ];
 
-        // Single provider round-trip; called up to twice (one retry) when parsing
-        // comes back short. Routes through OAuth/curl, Ollama, or the OpenAI SDK.
-        async function requestOnce(): Promise<string> {
-          if (providerConfig!.authMethod === 'oauth' && providerConfig!.accountId) {
-            return curlComplete({
-              messages,
-              model,
-              accessToken: providerConfig!.apiKey,
-              accountId: providerConfig!.accountId,
-            });
-          } else if (providerConfig!.isOllama) {
-            return ollamaChatComplete({
-              baseUrl: providerConfig!.baseUrl,
-              apiKey: providerConfig!.apiKey,
-              messages,
-              model,
-              temperature: 1.0,
-              maxTokens: 300,
-            });
-          } else {
-            const client = aiService.getClient();
-            if (!client) {
-              throw new Error('AI 客戶端未初始化');
-            }
-            const response = await client.chat.completions.create({
-              model,
-              messages,
-              max_tokens: 300,
-              temperature: 1.0,
-            });
-            return response.choices[0]?.message?.content ?? '';
-          }
-        }
-
-        let suggestions = parseSuggestions(await requestOnce());
+        let suggestions = parseSuggestions(
+          await completeOnce(providerConfig, messages, { model, maxTokens: 300, temperature: 1.0 }),
+        );
         // Auto-retry once if the model returned a malformed / short response.
         if (suggestions.length < 3) {
-          const retry = parseSuggestions(await requestOnce());
+          const retry = parseSuggestions(
+            await completeOnce(providerConfig, messages, { model, maxTokens: 300, temperature: 1.0 }),
+          );
           if (retry.length > suggestions.length) suggestions = retry;
+        }
+
+        // Cache against the current tip so reentry reuses these until a new
+        // paragraph is written. Don't cache a malformed/short result.
+        if (suggestions.length >= 3) {
+          fileStorage.writeSuggestionsCache(projectPath, req.branchId, {
+            tipId,
+            count: tipCount,
+            suggestions,
+          });
         }
 
         return { success: true, data: { suggestions } };
@@ -1771,6 +2017,68 @@ ${customInstructions ? `\n額外指令：${customInstructions}` : ''}
         return {
           success: false,
           error: { code: 'SUGGESTIONS_ERROR', message: `生成建議失敗：${message}`, details: err },
+        };
+      }
+    },
+  );
+
+  // ai:compact — fold older paragraphs into the running 前情提要 summary so long
+  // stories keep coherent context once the token budget starts truncating history.
+  ipcMain.handle(
+    IPC_CHANNELS.AI_COMPACT,
+    async (_event: IpcMainInvokeEvent, req: CompactRequest): Promise<IpcResult<CompactResponse>> => {
+      try {
+        await ensureFreshOAuthToken();
+
+        const providerConfig = getActiveProvider();
+        if (!providerConfig) {
+          return { success: false, error: { code: 'NO_PROVIDER', message: '尚未設定 AI 供應商' } };
+        }
+        aiService.configure(providerConfig);
+
+        const projectPath = getProjectStoragePath(req.projectId);
+        if (!projectPath) {
+          return { success: false, error: { code: 'PROJECT_NOT_OPEN', message: '專案未開啟' } };
+        }
+        const projectDb = getOpenProject(req.projectId);
+        if (!projectDb) {
+          return { success: false, error: { code: 'PROJECT_NOT_OPEN', message: '專案未開啟' } };
+        }
+
+        // Keep the most recent paragraphs raw; only the older portion is summarized.
+        const KEEP_RECENT = 8;
+        const fileStorage = getFileStorageService();
+        const existingSummary = fileStorage.readSummary(projectPath, req.branchId);
+        const allParagraphs = paragraphService
+          .listParagraphs(projectDb, req.branchId)
+          .filter(p => p.status !== 'detached');
+        const olderParagraphs = allParagraphs.slice(0, Math.max(0, allParagraphs.length - KEEP_RECENT));
+
+        if (olderParagraphs.length === 0) {
+          // Nothing old enough to compact yet — return the existing summary unchanged.
+          return { success: true, data: { summary: existingSummary, compactedCount: 0 } };
+        }
+
+        const olderTexts: string[] = [];
+        for (const para of olderParagraphs) {
+          const content = paragraphService.getParagraphContent(projectDb, projectPath, req.branchId, para.id);
+          if (content) olderTexts.push(content.split('---WORLD_CHANGES---')[0].trimEnd());
+        }
+        const olderStory = olderTexts.join('\n\n');
+
+        const summary = await foldStoryIntoSummary(providerConfig, existingSummary, olderStory);
+
+        if (!summary) {
+          return { success: false, error: { code: 'COMPACT_EMPTY', message: '壓縮結果為空，請重試' } };
+        }
+
+        fileStorage.writeSummary(projectPath, req.branchId, summary);
+        return { success: true, data: { summary, compactedCount: olderParagraphs.length } };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '未知錯誤';
+        return {
+          success: false,
+          error: { code: 'COMPACT_ERROR', message: `壓縮故事失敗：${message}`, details: err },
         };
       }
     },

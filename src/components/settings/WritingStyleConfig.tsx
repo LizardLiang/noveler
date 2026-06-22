@@ -13,6 +13,8 @@ export interface WritingStyle {
   languageStyle: 'formal' | 'casual' | 'literary';
   /** 成人內容模式：開啟後後端注入 NSFW 授權指令。預設關閉，不影響既有專案。 */
   nsfw?: boolean;
+  /** 每段目標字數。留空（undefined）則沿用預設的 200-500 字範圍，不影響既有專案。 */
+  wordCount?: number;
 }
 
 const DEFAULT_STYLE: WritingStyle = {
@@ -199,6 +201,38 @@ export function WritingStyleConfig({ projectId }: WritingStyleConfigProps) {
               label={label}
             />
           ))}
+        </div>
+      </div>
+
+      {/* Target word count per paragraph — empty keeps the default 200-500 range */}
+      <div>
+        <div style={{ fontSize: 13, color: 'var(--color-text-secondary)', marginBottom: 6 }}>
+          {zhTW.writingStyle.wordCount}
+        </div>
+        <input
+          type="number"
+          min={1}
+          step={50}
+          value={style.wordCount ?? ''}
+          placeholder={zhTW.writingStyle.wordCountPlaceholder}
+          onChange={e => {
+            const raw = e.target.value.trim();
+            const n = Number(raw);
+            handleChange('wordCount', raw === '' || !Number.isFinite(n) || n <= 0 ? undefined : n);
+          }}
+          style={{
+            width: 140,
+            padding: '6px 10px',
+            borderRadius: 'var(--radius-sm)',
+            border: '1px solid var(--color-border)',
+            background: 'var(--color-surface)',
+            color: 'var(--color-text-primary)',
+            fontSize: 13,
+            outline: 'none',
+          }}
+        />
+        <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', marginTop: 4 }}>
+          {zhTW.writingStyle.wordCountHint}
         </div>
       </div>
 

@@ -69,6 +69,7 @@ export interface StoryEvent {
   impact: string;
   participatingCharacters: string[];
   status: 'occurred' | 'planned';
+  source: 'author' | 'director';
   paragraphId: string | null;
   createdAt: string;
   updatedAt: string;
