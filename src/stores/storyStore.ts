@@ -12,6 +12,8 @@ interface StoryState {
   paragraphContents: Map<string, string>;
   streaming: StreamingState | null;
   isGenerating: boolean;
+  /** Transient: which pipeline phase the AI is currently in (drives the "what is the AI doing" label). */
+  currentPhase: string | null;
   currentBranchId: string | null;
   suggestions: string[];
   suggestionsLoading: boolean;
@@ -36,6 +38,7 @@ interface StoryState {
   appendStreamDelta: (paragraphId: string, delta: string) => void;
   finishStreaming: () => void;
   setGenerating: (generating: boolean) => void;
+  setCurrentPhase: (phase: string | null) => void;
   setCurrentBranchId: (branchId: string | null) => void;
   setBulkContents: (contents: Map<string, string>) => void;
   setSuggestions: (suggestions: string[]) => void;
@@ -54,6 +57,7 @@ export const useStoryStore = create<StoryState>((set, get) => ({
   paragraphContents: new Map(),
   streaming: null,
   isGenerating: false,
+  currentPhase: null,
   currentBranchId: null,
   suggestions: [],
   suggestionsLoading: false,
@@ -109,12 +113,14 @@ export const useStoryStore = create<StoryState>((set, get) => ({
       if (state.streaming) {
         const newContents = new Map(state.paragraphContents);
         newContents.set(state.streaming.paragraphId, state.streaming.content);
-        return { streaming: null, isGenerating: false, paragraphContents: newContents };
+        return { streaming: null, isGenerating: false, currentPhase: null, paragraphContents: newContents };
       }
-      return { streaming: null, isGenerating: false };
+      return { streaming: null, isGenerating: false, currentPhase: null };
     }),
   setGenerating: (generating: boolean) =>
-    set({ isGenerating: generating }),
+    set(generating ? { isGenerating: true } : { isGenerating: false, currentPhase: null }),
+  setCurrentPhase: (phase: string | null) =>
+    set({ currentPhase: phase }),
   setCurrentBranchId: (branchId: string | null) =>
     set({ currentBranchId: branchId }),
   setBulkContents: (contents: Map<string, string>) =>
@@ -144,5 +150,5 @@ export const useStoryStore = create<StoryState>((set, get) => ({
       return { reasoningByParagraph: reasoning };
     }),
   reset: () =>
-    set({ paragraphs: [], paragraphContents: new Map(), streaming: null, isGenerating: false, currentBranchId: null, suggestions: [], suggestionsLoading: false, refiningParagraphId: null, refineUnavailableNotify: false, refinedParagraphIds: new Set<string>(), generationError: null, reasoningByParagraph: new Map<string, string>() }),
+    set({ paragraphs: [], paragraphContents: new Map(), streaming: null, isGenerating: false, currentPhase: null, currentBranchId: null, suggestions: [], suggestionsLoading: false, refiningParagraphId: null, refineUnavailableNotify: false, refinedParagraphIds: new Set<string>(), generationError: null, reasoningByParagraph: new Map<string, string>() }),
 }));

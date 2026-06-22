@@ -5,13 +5,17 @@ interface ChatInputProps {
   onSend: (message: string) => void;
   onCancel: () => void;
   isGenerating: boolean;
+  /** Current AI pipeline phase key (director/context/generating/…); drives the status label. */
+  phase?: string | null;
   disabled?: boolean;
   /** Per-generation target word count override; undefined = use the project default. */
   wordCount?: number;
   onWordCountChange?: (value: number | undefined) => void;
 }
 
-export function ChatInput({ onSend, onCancel, isGenerating, disabled, wordCount, onWordCountChange }: ChatInputProps) {
+export function ChatInput({ onSend, onCancel, isGenerating, phase, disabled, wordCount, onWordCountChange }: ChatInputProps) {
+  const phaseLabel =
+    (phase && (zhTW.chat.phases as Record<string, string>)[phase]) || zhTW.chat.generating;
   const [value, setValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -217,7 +221,7 @@ export function ChatInput({ onSend, onCancel, isGenerating, disabled, wordCount,
               animation: 'pulse 1.4s ease-in-out infinite',
             }}
           />
-          {zhTW.chat.generating}
+          {phaseLabel}
         </div>
       )}
 

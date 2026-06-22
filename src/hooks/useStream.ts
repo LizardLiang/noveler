@@ -33,6 +33,7 @@ export function useStream(projectId: string | undefined, options?: UseStreamOpti
     setParagraphRefined,
     setGenerationError,
     appendReasoning,
+    setCurrentPhase,
   } = useStoryStore();
 
   const { setParagraphParseStatus, loadAll } = useWorldMemoryStore();
@@ -138,10 +139,18 @@ export function useStream(projectId: string | undefined, options?: UseStreamOpti
         return;
       }
 
+      if (data.type === 'phase') {
+        // Pipeline progress signpost — "what is the AI doing now" label.
+        const phase = (data.meta as Record<string, unknown> | undefined)?.phase;
+        setCurrentPhase(typeof phase === 'string' ? phase : null);
+        return;
+      }
+
       if (data.type === 'dialogue_refining') {
         // Dialogue editor pass started or finished — toggle the refining indicator
         const refining = Boolean((data.meta as Record<string, unknown> | undefined)?.refining);
         setRefiningParagraphId(refining ? data.paragraphId : null);
+        setCurrentPhase(refining ? 'dialogue' : null);
         return;
       }
 
@@ -246,7 +255,7 @@ export function useStream(projectId: string | undefined, options?: UseStreamOpti
     };
   // options callbacks are stable refs from parent; including them would cause re-subscription on every render
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, addParagraph, updateParagraph, startStreaming, appendStreamDelta, finishStreaming, setGenerating, setParagraphContent, setRefiningParagraphId, setRefineUnavailableNotify, setParagraphRefined, setGenerationError, appendReasoning, setParagraphParseStatus, loadAll]);
+  }, [projectId, addParagraph, updateParagraph, startStreaming, appendStreamDelta, finishStreaming, setGenerating, setParagraphContent, setRefiningParagraphId, setRefineUnavailableNotify, setParagraphRefined, setGenerationError, appendReasoning, setCurrentPhase, setParagraphParseStatus, loadAll]);
 
   const cancelGeneration = useCallback(() => {
     if (!projectId) return;

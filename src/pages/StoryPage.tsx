@@ -30,6 +30,8 @@ export function StoryPage() {
     paragraphContents,
     streaming,
     isGenerating,
+    currentPhase,
+    setCurrentPhase,
     currentBranchId,
     setCurrentBranchId,
     setParagraphs,
@@ -312,6 +314,7 @@ export function StoryPage() {
     if (!projectId || isGenerating) return;
     clearSuggestions();
     setGenerating(true);
+    setCurrentPhase('preparing');
     shouldAutoScrollRef.current = true;
 
     const result = await aiApi.generate({
@@ -336,7 +339,7 @@ export function StoryPage() {
         }
       }
     }
-  }, [projectId, isGenerating, currentBranchId, genWordCount, setGenerating, setCurrentBranchId, clearSuggestions]);
+  }, [projectId, isGenerating, currentBranchId, genWordCount, setGenerating, setCurrentPhase, setCurrentBranchId, clearSuggestions]);
 
   // Create opening (開場白) — save the user's opening prose as the story's first
   // paragraph. The suggestions effect (watching paragraphs.length) then auto-fetches
@@ -395,6 +398,7 @@ export function StoryPage() {
   const handleRegenerate = useCallback(async (paragraphId: string) => {
     if (!projectId || !currentBranchId || isGenerating) return;
     setGenerating(true);
+    setCurrentPhase('preparing');
     shouldAutoScrollRef.current = true;
 
     const result = await paragraphApi.regenerate({
@@ -408,7 +412,7 @@ export function StoryPage() {
     if (!result.success) {
       setGenerating(false);
     }
-  }, [projectId, currentBranchId, isGenerating, genWordCount, setGenerating]);
+  }, [projectId, currentBranchId, isGenerating, genWordCount, setGenerating, setCurrentPhase]);
 
   // Rollback
   const handleRollback = useCallback(async (paragraphId: string) => {
@@ -1171,6 +1175,7 @@ export function StoryPage() {
         onSend={handleSend}
         onCancel={cancelGeneration}
         isGenerating={isGenerating}
+        phase={currentPhase}
         disabled={!hasActiveProvider}
         wordCount={genWordCount}
         onWordCountChange={setGenWordCount}

@@ -706,6 +706,22 @@ async function runDialoguePass(
   return { adoptedText, refineFailedNotify };
 }
 
+/**
+ * Emit a pipeline-progress signpost so the renderer can show "what is the AI
+ * doing now" (導演規劃 / 查詢世界記憶 / 生成故事 / 更新世界記憶 …). These are
+ * lightweight status events piggybacked on the stream:chunk channel — no
+ * paragraph is attached, the renderer keys off meta.phase only.
+ */
+function emitPhase(event: IpcMainInvokeEvent, phase: string): void {
+  event.sender.send(IPC_CHANNELS.STREAM_CHUNK, {
+    paragraphId: '',
+    delta: '',
+    done: false,
+    type: 'phase',
+    meta: { phase },
+  });
+}
+
 export function registerAIHandlers(): void {
   const aiService = getAIProviderService();
   const contextManager = getContextManager();
@@ -818,6 +834,7 @@ export function registerAIHandlers(): void {
         // Director pre-step: optionally reconcile the AI roadmap, then steer the
         // next paragraph toward the nearest planned event.
         // Running 前情提要 (manual compaction) preserves context the budget would truncate.
+        emitPhase(event, 'director');
         const directorDirective = await getDirectorService().planAndDirect({
           providerConfig,
           model,
@@ -854,6 +871,7 @@ export function registerAIHandlers(): void {
             targetWordCount,
           });
 
+        emitPhase(event, 'context');
         const compacted = await assembleNeverTrim(
           providerConfig, projectPath, effectiveBranchId, historyContext, storySummary, assembleGen,
         );
@@ -890,6 +908,7 @@ export function registerAIHandlers(): void {
         // Preflight: let AI query world memory via tools if data exists
         let finalMessages: ChatCompletionMessageParam[] = assembled.messages;
         if (useTools) {
+          emitPhase(event, 'world_query');
           try {
             const preflight = await aiService.completeWithTools({
               messages: assembled.messages,
@@ -1007,6 +1026,7 @@ export function registerAIHandlers(): void {
 
         // Stream final story generation — native Ollama (raises num_ctx) for Ollama,
         // curl for OAuth, SDK for other API-key providers.
+        emitPhase(event, 'generating');
         if (providerConfig.isOllama) {
           const promptTokens = assembled.used.system + assembled.used.worldMemory + assembled.used.storyHistory + assembled.used.userInput;
           await ollamaChatStream({
@@ -1055,6 +1075,7 @@ export function registerAIHandlers(): void {
 
         // Second pass: extract world changes from the finished story text
         if (parseResult.noDetection && storyText) {
+          emitPhase(event, 'world_update');
           const knownNames = allCharacters.map(c => c.name);
           const extracted = await extractWorldChanges(aiService, providerConfig, model, storyText, knownNames);
           if (extracted) {
@@ -1628,6 +1649,7 @@ export function registerAIHandlers(): void {
             targetWordCount,
           });
 
+        emitPhase(event, 'context');
         const compactedRegen = await assembleNeverTrim(
           providerConfig, projectPath, req.branchId, historyContext, storySummaryRegen, assembleRegen,
         );
@@ -1653,6 +1675,7 @@ export function registerAIHandlers(): void {
         // Preflight: let AI query world memory via tools
         let regenFinalMessages: ChatCompletionMessageParam[] = assembled.messages;
         if (useToolsRegen) {
+          emitPhase(event, 'world_query');
           try {
             const preflight = await aiService.completeWithTools({
               messages: assembled.messages,
@@ -1722,6 +1745,7 @@ export function registerAIHandlers(): void {
           done: false,
           type: 'regenerate_start',
         });
+        emitPhase(event, 'generating');
 
         const regenStreamCallbacks = {
           onChunk: (chunk: { delta: string; done: boolean; reasoning?: boolean }) => {
@@ -1805,6 +1829,7 @@ export function registerAIHandlers(): void {
 
         // Second pass: extract world changes from the finished story text
         if (regenParseResult.noDetection && regenStoryText) {
+          emitPhase(event, 'world_update');
           const knownNames = regenAllCharacters.map(c => c.name);
           const extracted = await extractWorldChanges(aiService, providerConfig, model, regenStoryText, knownNames);
           if (extracted) {
