@@ -411,8 +411,22 @@ export function StoryPage() {
 
     if (!result.success) {
       setGenerating(false);
+      return;
     }
-  }, [projectId, currentBranchId, isGenerating, genWordCount, setGenerating, setCurrentPhase]);
+
+    // Backend detaches paragraphs after the target (and rolled back their world
+    // changes) so the rewritten beat doesn't jump the timeline. Mirror that in the
+    // store and refresh world memory to match.
+    const targetIdx = paragraphs.findIndex(p => p.id === paragraphId);
+    if (targetIdx >= 0) {
+      paragraphs.slice(targetIdx + 1).forEach(p => {
+        if (p.status !== 'detached') {
+          updateParagraph(p.id, { status: 'detached' });
+        }
+      });
+    }
+    loadAll(projectId, currentBranchId);
+  }, [projectId, currentBranchId, isGenerating, genWordCount, paragraphs, updateParagraph, loadAll, setGenerating, setCurrentPhase]);
 
   // Rollback
   const handleRollback = useCallback(async (paragraphId: string) => {

@@ -675,15 +675,21 @@ export class WorldMemoryService {
     projectId: string,
     branchId: string,
     targetParagraphId: string,
+    options?: { inclusive?: boolean },
   ): void {
     const targetRow = db
       .prepare('SELECT position FROM paragraph_meta WHERE id=?')
       .get(targetParagraphId) as { position: number } | undefined;
     if (!targetRow) return;
 
+    // Default: undo changes from paragraphs *after* the target (rollback keeps the
+    // target). `inclusive` also undoes the target's own changes — used by regenerate,
+    // which rewrites the target and must not feed the old version's world facts back
+    // into the next prompt.
+    const comparator = options?.inclusive ? '>=' : '>';
     const detachedParagraphs = db
       .prepare(
-        'SELECT id FROM paragraph_meta WHERE branch_id=? AND position > ? ORDER BY position ASC',
+        `SELECT id FROM paragraph_meta WHERE branch_id=? AND position ${comparator} ? ORDER BY position ASC`,
       )
       .all(branchId, targetRow.position) as { id: string }[];
 

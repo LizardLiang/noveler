@@ -1617,6 +1617,23 @@ export function registerAIHandlers(): void {
           .map(h => h.content)
           .join('\n');
 
+        // Reset world-state for the beat being rewritten: roll back the world-memory
+        // changes attributed to the target *and* everything after it, and detach the
+        // now-orphaned downstream paragraphs. Without this, buildWorldDirectory /
+        // buildWorldMemorySummary below would feed the old version's facts (and later
+        // beats) into the prompt, making the regenerated paragraph jump the timeline.
+        regenProjectDb.beginTransaction();
+        try {
+          worldMemoryService.rollbackWorldMemory(
+            regenProjectDb, req.projectId, req.branchId, req.targetParagraphId, { inclusive: true },
+          );
+          paragraphService.rollbackFromParagraph(regenProjectDb, req.branchId, req.targetParagraphId);
+          regenProjectDb.commitTransaction();
+        } catch (txErr) {
+          regenProjectDb.rollbackTransaction();
+          throw txErr;
+        }
+
         const worldDirectoryRegen = buildWorldDirectory(
           worldMemoryService, regenProjectDb, req.projectId, req.branchId,
         );
@@ -1657,15 +1674,9 @@ export function registerAIHandlers(): void {
         const effectiveHistoryRegen = compactedRegen.history;
         storySummaryRegen = compactedRegen.summary;
 
-        // Update the target paragraph status
+        // Update the target paragraph status. Downstream paragraphs were already
+        // detached (and their world changes rolled back) above.
         paragraphService.updateStatus(regenProjectDb, req.targetParagraphId, 'generating');
-
-        // Mark subsequent paragraphs as review_pending
-        for (const para of allParagraphs.slice(targetIdx + 1)) {
-          if (para.status !== 'detached') {
-            paragraphService.updateStatus(regenProjectDb, para.id, 'review_pending');
-          }
-        }
 
         const controller = new AbortController();
         const myToken = (generationTokens.get(req.projectId) ?? 0) + 1;
@@ -1877,6 +1888,26 @@ export function registerAIHandlers(): void {
           );
           regenTotalVersions = regenActiveVersion;
           paragraphService.updateStatus(regenProjectDb, req.targetParagraphId, 'normal');
+
+          // Auto-apply the new version's world changes. The old version's changes were
+          // rolled back before generation, so this keeps world memory in sync with the
+          // adopted text instead of letting it drift.
+          if (regenParseResult.changes && regenParseResult.changes.length > 0) {
+            for (const change of regenParseResult.changes) {
+              try {
+                await applyWorldChange(
+                  worldMemoryService,
+                  regenProjectDb,
+                  req.projectId,
+                  req.branchId,
+                  req.targetParagraphId,
+                  { type: change.type, data: change.data as Record<string, unknown> },
+                );
+              } catch (applyErr) {
+                console.error('Failed to auto-apply regenerated world change:', applyErr);
+              }
+            }
+          }
         } else {
           paragraphService.updateStatus(regenProjectDb, req.targetParagraphId, 'draft');
         }
@@ -1890,6 +1921,7 @@ export function registerAIHandlers(): void {
                 data: c.data as Record<string, unknown>,
               }))
             : null,
+          worldChangesAutoApplied: true,
           parseError: regenParseResult.parseError,
           noDetection: regenParseResult.noDetection,
           tokenUsage,
