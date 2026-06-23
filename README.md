@@ -1,30 +1,31 @@
-# electron-vite-react
+# Noveler
 
-[![awesome-vite](https://awesome.re/mentioned-badge.svg)](https://github.com/vitejs/awesome-vite)
-![GitHub stars](https://img.shields.io/github/stars/electron-vite/electron-vite-react?color=fa6470)
-![GitHub issues](https://img.shields.io/github/issues/electron-vite/electron-vite-react?color=d8b22d)
-![GitHub license](https://img.shields.io/github/license/electron-vite/electron-vite-react)
-[![Required Node.js >= 20.19.0 || >= 22.12.0](https://img.shields.io/static/v1?label=node&message=%3E=20.19.0%20||%20%3E=22.12.0&logo=node.js&color=3f893e)](https://nodejs.org/about/releases)
+**AI 互動小說生成器** — An AI-assisted interactive novel writing desktop app built with Electron, React and TypeScript.
 
-English | [简体中文](README.zh-CN.md)
+Noveler lets you co-write long-form fiction with an LLM. You write or paste an opening, then drive the story forward turn by turn with author directives. A built-in "Director" plans plot beats ahead, a persistent World Memory tracks characters, relationships and events, and editor passes refine dialogue and narration as you go. The UI is in Traditional Chinese (繁體中文).
 
-## Overview
+> Built on the [electron-vite-react](https://github.com/electron-vite/electron-vite-react) template.
 
-- Ready out of the box.
-- Based on the official [template-react-ts](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts).
-- Supports Electron and Node.js APIs in the renderer process.
-- Supports C/C++ native addons.
-- Includes debugger configuration.
-- Easy to extend to multiple windows.
+## Features
+
+- **Turn-based story generation** — stream story continuations from your chosen model; chat input is framed as an author directive rather than completed narration.
+- **World Memory** — characters, relationships and events persisted per project, auto-updated as the story advances and editable by hand. Import from JSON files or pasted text.
+- **Director / plot planning** — maintains a rolling roadmap of upcoming plot beats and injects scene-continuity directives so the narrative stays coherent.
+- **Editor passes** — dialogue editor, narration editor, writing-style and plot-compliance configuration to shape tone and quality.
+- **Branching & versions** — timeline tree with branch create/switch/rename, paragraph regeneration, version switching and rollback.
+- **Multiple AI providers** — any OpenAI-compatible endpoint, OpenRouter (with credit display), and local [Ollama](https://ollama.com/). OpenAI/ChatGPT sign-in via OAuth device flow is also supported.
+- **Context budgeting** — token accounting with `js-tiktoken`, a context-budget indicator, and story compaction ("前情提要") to stay within the model's context window.
+- **Search** — full-text search plus character/event lookup across the project.
+- **Autosave & crash recovery** — periodic snapshots with recovery prompts on restart.
+- **Project templates**, story stats, onboarding wizard, dark/light/system themes, and adjustable font size.
+- **Import existing novels** from `.txt` / `.md` into a project.
 
 ## Quick Start
 
 ```sh
 # clone the project
-git clone https://github.com/electron-vite/electron-vite-react.git
-
-# enter the project directory
-cd electron-vite-react
+git clone https://github.com/LizardLiang/noveler.git
+cd noveler
 
 # install dependencies
 pnpm install
@@ -33,47 +34,55 @@ pnpm install
 pnpm dev
 ```
 
+Requires Node.js `>= 20.19.0 || >= 22.12.0`.
+
 ## Available Scripts
 
-- `pnpm dev`: start the Vite dev server.
-- `pnpm build`: build the renderer and package the app with electron-builder.
-- `pnpm preview`: preview the production web build locally.
-- `pnpm test`: run Vitest unit tests.
-- `pnpm test:e2e`: build the test mode bundle and run Playwright tests.
-- `pnpm typecheck`: run the TypeScript type checker.
+- `pnpm dev` — start the Vite dev server with Electron.
+- `pnpm build` — build the renderer and package the app with electron-builder.
+- `pnpm release` — build and package without publishing (`release:win` / `release:mac` / `release:dir` for targeted builds).
+- `pnpm preview` — preview the production web build locally.
+- `pnpm test` — run Vitest unit tests.
+- `pnpm test:e2e` — build the test bundle and run Playwright tests.
+- `pnpm typecheck` — run the TypeScript type checker.
+
+## Tech Stack
+
+- **Electron** + **Vite** + **React 19** + **TypeScript**
+- **TailwindCSS v4** for styling
+- **Zustand** for renderer state
+- **sql.js** for per-project SQLite storage (characters, events, paragraphs, branches)
+- **openai** SDK for streaming completions; native transports for Ollama and OAuth/curl
+- **zod** for schema validation, **react-router-dom** (hash router), **react-markdown**
 
 ## Project Structure
 
 ```tree
-├── build/            Packaging assets
-├── dist-electron/    Compiled Electron output
-├── electron/         Main-process and preload source
+├── electron/             Main-process and preload source
 │   ├── main/
-│   └── preload/
-├── public/           Static assets
-├── src/              Renderer source code
-│   ├── components/
-│   │   └── update/
-│   ├── demos/
-│   └── type/
-└── test/             Unit and end-to-end tests
+│   │   └── services/     AI, World Memory, Director, editors, storage, OAuth, search…
+│   ├── ipc/              IPC channel handlers
+│   ├── preload/
+│   └── shared/           Types shared between main and renderer
+├── src/                  Renderer source code
+│   ├── components/       UI: story, worldMemory, settings, sidebar, search, stats…
+│   ├── pages/            ProjectList, Story, Settings
+│   ├── stores/           Zustand stores
+│   ├── hooks/
+│   ├── layouts/
+│   └── i18n/             zh-TW strings
+├── build/                Packaging assets
+├── dist-electron/        Compiled Electron output
+└── test/                 Unit and end-to-end tests
     └── e2e/
 ```
 
 Files under `electron/` are compiled into `dist-electron/`.
 
-## Security Note
+## Configuration
 
-The `renderer: {}` preset in `vite.config.ts` is only a Vite adapter that polyfills Electron, Node.js APIs and native modules for the renderer process. It is not the same as enabling Node integration. If you want direct Node.js access in the renderer, enable `nodeIntegration` in the `BrowserWindow` webPreferences in the main process and review the security impact carefully.
+AI providers are configured in the in-app **Settings** page — add an OpenAI-compatible base URL and API key, connect OpenRouter, point at a local Ollama instance, or sign in via OAuth. API keys are stored encrypted on disk. Writing style, dialogue/narration editing, plot compliance and the system prompt are all editable from Settings as well.
 
-## Features
+## License
 
-1. Electron auto update with docs in [src/components/update/README.md](src/components/update/README.md).
-2. Vitest unit tests and Playwright end-to-end tests.
-3. TailwindCSS v4.
-
-## Resources
-
-- Auto-update docs: [English](src/components/update/README.md) | [简体中文](src/components/update/README.zh-CN.md)
-- [C/C++ addons, Node.js modules - Pre-Bundling](https://github.com/electron-vite/vite-plugin-electron-renderer#dependency-pre-bundling)
-- [dependencies vs devDependencies](https://github.com/electron-vite/vite-plugin-electron-renderer#dependencies-vs-devdependencies)
+MIT © LizardLiang
