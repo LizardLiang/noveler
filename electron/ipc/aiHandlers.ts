@@ -134,6 +134,25 @@ function getWorldRules(projectId: string): string {
 }
 
 /**
+ * Read the per-branch standing author direction (創作走向) from project_settings.
+ * Stored under key `director_brief:<branchId>`. Biases the director's roadmap
+ * reconcile + steering directive, and flows through to generation and suggestions.
+ */
+function getDirectorBrief(projectId: string, branchId: string): string {
+  try {
+    const projectDb = getOpenProject(projectId);
+    if (!projectDb) return '';
+    const row = projectDb.prepare(
+      'SELECT value FROM project_settings WHERE key=?',
+    ).get(`director_brief:${branchId}`) as { value: string } | undefined;
+    if (!row) return '';
+    return JSON.parse(String(row.value)) as string;
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Build world memory summary with smart filtering.
  * Active characters (mentioned in recentText) get full details,
  * others get a directory listing only.
@@ -803,10 +822,15 @@ async function runPlotCompliancePass(
 ): Promise<void> {
   if (!projectDb) return;
 
-  // Only the short-term planned events were actively steered — bound the check to them.
+  // Author short-term beats were actively steered (near-term queue). Director beats
+  // are steered every paragraph via the director directive regardless of horizon, so
+  // include all planned director beats — otherwise they could never be marked occurred.
   const shortEvents = worldMemoryService
     .listEvents(projectDb, projectId, branchId)
-    .filter(e => e.status === 'planned' && e.horizon === 'short')
+    .filter(e =>
+      e.status === 'planned' &&
+      (e.horizon === 'short' || e.source === 'director'),
+    )
     .map(e => ({ id: e.id, name: e.name, description: e.description }));
   if (shortEvents.length === 0) return;
 
@@ -994,6 +1018,8 @@ export function registerAIHandlers(): void {
           generationToken: myToken,
           isCurrentToken: (pid, tok) => generationTokens.get(pid) === tok,
           plan: true,
+          directorBrief: getDirectorBrief(req.projectId, effectiveBranchId),
+          directorNote: req.directorNote ?? '',
           worldRules: getWorldRules(req.projectId),
           aiClient: aiService.getClient(),
         });
@@ -1427,6 +1453,83 @@ export function registerAIHandlers(): void {
     },
   );
 
+  // director:replan — author talked to the director (set a 創作走向 brief and asked
+  // it to rewrite the 大綱). Force a reconcile regardless of the planned-ahead count,
+  // then notify the renderer so the EventPanel roadmap refreshes.
+  ipcMain.handle(
+    IPC_CHANNELS.DIRECTOR_REPLAN,
+    async (
+      event: IpcMainInvokeEvent,
+      req: { projectId: string; branchId: string },
+    ): Promise<IpcResult<void>> => {
+      try {
+        await ensureFreshOAuthToken();
+
+        const providerConfig = getActiveProvider();
+        if (!providerConfig) {
+          return {
+            success: false,
+            error: { code: 'NO_PROVIDER', message: '尚未設定 AI 供應商，請先在設定中新增供應商' },
+          };
+        }
+        aiService.configure(providerConfig);
+
+        const projectPath = getProjectStoragePath(req.projectId);
+        const projectDb = getOpenProject(req.projectId);
+        if (!projectPath || !projectDb) {
+          return { success: false, error: { code: 'PROJECT_NOT_OPEN', message: '專案未開啟' } };
+        }
+
+        const model = providerConfig.defaultModel;
+        const branchId = paragraphService.getOrCreateMainBranch(projectDb, projectPath, req.projectId);
+        const effectiveBranchId = req.branchId || branchId;
+
+        // Recent story for the planner — same shape as the generate path (last ~8 paras).
+        const allParagraphs = paragraphService.listParagraphs(projectDb, effectiveBranchId);
+        const recentTexts: string[] = [];
+        for (const para of allParagraphs) {
+          if (para.status === 'detached') continue;
+          const content = paragraphService.getParagraphContent(
+            projectDb, projectPath, effectiveBranchId, para.id,
+          );
+          if (content) recentTexts.push(content);
+        }
+        const recentStory = recentTexts.slice(-8).join('\n\n');
+
+        // Fresh write-guard token so the forced reconcile's DB writes are allowed.
+        const myToken = (generationTokens.get(req.projectId) ?? 0) + 1;
+        generationTokens.set(req.projectId, myToken);
+
+        await getDirectorService().planAndDirect({
+          providerConfig,
+          model,
+          db: projectDb,
+          projectId: req.projectId,
+          branchId: effectiveBranchId,
+          recentStory,
+          generationToken: myToken,
+          isCurrentToken: (pid, tok) => generationTokens.get(pid) === tok,
+          plan: true,
+          force: true,
+          directorBrief: getDirectorBrief(req.projectId, effectiveBranchId),
+          worldRules: getWorldRules(req.projectId),
+          aiClient: aiService.getClient(),
+        });
+
+        event.sender.send(IPC_CHANNELS.WORLD_MEMORY_EVENTS_CHANGED, {
+          projectId: req.projectId,
+          branchId: effectiveBranchId,
+        });
+        return { success: true, data: undefined };
+      } catch (err) {
+        return {
+          success: false,
+          error: { code: 'DIRECTOR_REPLAN_ERROR', message: '導演重新規劃失敗', details: err },
+        };
+      }
+    },
+  );
+
   // ai:testGenerate — settings-page "test writing effect" popup.
   // Project-independent: uses the active provider but persists nothing. Streams
   // three time-point scenarios sequentially via TEST_CHUNK / TEST_SCENARIO_DONE.
@@ -1840,6 +1943,13 @@ export function registerAIHandlers(): void {
         // Per-generation override wins over the project default.
         const targetWordCount = req.targetWordCount ?? getWordCountTarget(req.projectId);
 
+        // One-off author instruction for THIS rewrite (額外指示). Not persisted and the
+        // roadmap is untouched — it rides the directorDirective slot so it lands as the
+        // freshest, highest-priority steer the model sees for the regenerated beat.
+        const regenDirective = req.directorNote?.trim()
+          ? `【作者對本段重寫的額外要求（僅此一段，最優先，須貫徹）】\n${req.directorNote.trim()}\n請在與前文自然銜接、不跳場、不劇透的前提下，依此要求重寫本段。`
+          : '';
+
         let storySummaryRegen = getFileStorageService().readSummary(projectPath, req.branchId);
 
         // Never trim the story on overflow — fold older paragraphs into 前情提要.
@@ -1854,6 +1964,7 @@ export function registerAIHandlers(): void {
             worldMemorySummary: useToolsRegen ? '' : worldMemorySummaryRegen,
             storyHistory: history,
             userInput: userMsg,
+            directorDirective: regenDirective,
             storySummary: summary,
             targetWordCount,
           });
@@ -1930,6 +2041,7 @@ export function registerAIHandlers(): void {
               worldMemorySummary: worldMemorySummaryRegen,
               storyHistory: effectiveHistoryRegen,
               userInput: userMsg,
+              directorDirective: regenDirective,
               storySummary: storySummaryRegen,
               targetWordCount,
             });
@@ -2234,6 +2346,7 @@ export function registerAIHandlers(): void {
           generationToken: 0,
           isCurrentToken: () => true,
           plan: false,
+          directorBrief: getDirectorBrief(req.projectId, req.branchId),
           worldRules,
           aiClient: aiService.getClient(),
         });

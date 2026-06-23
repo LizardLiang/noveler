@@ -18,6 +18,8 @@ export const IPC_CHANNELS = {
   // AI 生成
   AI_GENERATE: 'ai:generate',
   AI_CANCEL: 'ai:cancel',
+  // 導演重新規劃大綱（作者下達創作走向後，強制重排 AI 規劃事件）
+  DIRECTOR_REPLAN: 'director:replan',
   AI_TEST_CONNECTION: 'ai:testConnection',
   AI_GET_MODELS: 'ai:getModels',
   AI_GET_CREDITS: 'ai:getCredits',
@@ -41,6 +43,7 @@ export const IPC_CHANNELS = {
   PARAGRAPH_DELETE: 'paragraph:delete',
   PARAGRAPH_REGENERATE: 'paragraph:regenerate',
   PARAGRAPH_SWITCH_VERSION: 'paragraph:switchVersion',
+  PARAGRAPH_EDIT: 'paragraph:edit',
   PARAGRAPH_ROLLBACK: 'paragraph:rollback',
   PARAGRAPH_GET_LINKED_WORLD_MEMORY: 'paragraph:getLinkedWorldMemory',
   PARAGRAPH_CREATE_OPENING: 'paragraph:createOpening',

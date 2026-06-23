@@ -22,8 +22,15 @@ function App() {
 
   useEffect(() => {
     settingsApi.get().then(result => {
-      if (result.success && !result.data.onboardingCompleted) {
-        setShowOnboarding(true);
+      if (result.success) {
+        // Hydrate persisted display prefs into the UI store (it otherwise starts at
+        // its hard-coded defaults, so a saved font size would reset on every launch).
+        if (typeof result.data.fontSize === 'number') {
+          useUIStore.getState().setFontSize(result.data.fontSize);
+        }
+        if (!result.data.onboardingCompleted) {
+          setShowOnboarding(true);
+        }
       }
       setOnboardingChecked(true);
     }).catch(() => {

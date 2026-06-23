@@ -216,7 +216,7 @@ describe('DirectorService', () => {
     await service.reconcileRoadmap(
       db, 'proj-1', 'branch-1', 'recent story',
       1, () => true,
-      makeProvider(), 'gpt-4', '', aiClient,
+      makeProvider(), 'gpt-4', '', '', aiClient,
     );
 
     // keep=2 + new=3 would exceed HORIZON=3, so only 1 new beat should be inserted
@@ -264,7 +264,7 @@ describe('DirectorService', () => {
     await service.reconcileRoadmap(
       db, 'proj-1', 'branch-1', 'recent story',
       1, () => true,
-      makeProvider(), 'gpt-4', '', aiClient,
+      makeProvider(), 'gpt-4', '', '', aiClient,
     );
 
     // b2 should have been deleted
@@ -306,7 +306,7 @@ describe('DirectorService', () => {
     await service.reconcileRoadmap(
       db, 'proj-1', 'branch-1', 'recent story',
       1, () => true,
-      makeProvider(), 'gpt-4', '', makeAiClient(reconcileResponse),
+      makeProvider(), 'gpt-4', '', '', makeAiClient(reconcileResponse),
     );
 
     // d1 can be deleted (it's source='director')
@@ -332,7 +332,7 @@ describe('DirectorService', () => {
     const result = await service.reconcileRoadmap(
       db, 'proj-1', 'branch-1', 'recent story',
       1, () => true,
-      makeProvider(), 'gpt-4', '', aiClient,
+      makeProvider(), 'gpt-4', '', '', aiClient,
     );
 
     // Should return false (no-op)
@@ -363,7 +363,7 @@ describe('DirectorService', () => {
     const result = await service.reconcileRoadmap(
       db, 'proj-1', 'branch-1', 'story text',
       1, () => false,
-      makeProvider(), 'gpt-4', '', makeAiClient(response),
+      makeProvider(), 'gpt-4', '', '', makeAiClient(response),
     );
 
     expect(result).toBe(false);
@@ -390,7 +390,7 @@ describe('DirectorService', () => {
       apiKey: 'oauth-token',
     });
 
-    await service.buildDirective(db, 'proj-1', 'branch-1', 'recent story', '', oauthProvider, 'gpt-4');
+    await service.buildDirective(db, 'proj-1', 'branch-1', 'recent story', '', '', oauthProvider, 'gpt-4');
 
     expect(mockCurlComplete).toHaveBeenCalledOnce();
     expect(mockOllamaChatComplete).not.toHaveBeenCalled();
@@ -413,7 +413,7 @@ describe('DirectorService', () => {
       baseUrl: 'http://localhost:11434',
     });
 
-    await service.buildDirective(db, 'proj-1', 'branch-1', 'recent story', '', ollamaProvider, 'llama3');
+    await service.buildDirective(db, 'proj-1', 'branch-1', 'recent story', '', '', ollamaProvider, 'llama3');
 
     expect(mockOllamaChatComplete).toHaveBeenCalledOnce();
     expect(mockCurlComplete).not.toHaveBeenCalled();
@@ -431,7 +431,7 @@ describe('DirectorService', () => {
       vi.fn().mockReturnValue({ run: vi.fn(), get: vi.fn().mockReturnValue({ n: 0 }), all: vi.fn().mockReturnValue([]) }),
     ) as unknown as import('../database.js').ProjectDatabase;
 
-    await service.buildDirective(db, 'proj-1', 'branch-1', 'recent story', '', makeProvider(), 'gpt-4', aiClient);
+    await service.buildDirective(db, 'proj-1', 'branch-1', 'recent story', '', '', makeProvider(), 'gpt-4', aiClient);
 
     expect(aiClient.chat.completions.create).toHaveBeenCalledOnce();
     expect(mockCurlComplete).not.toHaveBeenCalled();
@@ -464,7 +464,7 @@ describe('DirectorService', () => {
       vi.fn().mockReturnValue({ run: vi.fn(), get: vi.fn().mockReturnValue({ n: 0 }), all: vi.fn().mockReturnValue([]) }),
     ) as unknown as import('../database.js').ProjectDatabase;
 
-    await service.buildDirective(db, 'proj-1', 'branch-1', 'some story', '', makeProvider(), 'gpt-4', aiClient);
+    await service.buildDirective(db, 'proj-1', 'branch-1', 'some story', '', '', makeProvider(), 'gpt-4', aiClient);
 
     // Author Event should appear before Director Event in the roadmap text
     const authorIdx = capturedUserContent.indexOf('Author Event');
@@ -534,7 +534,7 @@ describe('DirectorService', () => {
     const result = await service.reconcileRoadmap(
       db, 'proj-1', 'branch-1', 'recent story',
       1, () => true,
-      makeProvider(), 'gpt-4', '', makeAiClient(reconcileResponse),
+      makeProvider(), 'gpt-4', '', '', makeAiClient(reconcileResponse),
     );
 
     expect(result).toBe(true);
@@ -574,7 +574,7 @@ describe('DirectorService', () => {
     const result = await service.reconcileRoadmap(
       db, 'proj-1', 'branch-1', 'story text',
       1, () => false,
-      makeProvider(), 'gpt-4', '', makeAiClient(reconcileResponse),
+      makeProvider(), 'gpt-4', '', '', makeAiClient(reconcileResponse),
     );
 
     expect(result).toBe(false);
@@ -584,5 +584,175 @@ describe('DirectorService', () => {
     expect(txDb._beginTransaction).toHaveBeenCalledOnce();
     expect(txDb._rollbackTransaction).toHaveBeenCalledOnce();
     expect(txDb._commitTransaction).not.toHaveBeenCalled();
+  });
+
+  // ── TC-15: force=true reconciles even when planned-ahead count >= threshold ──
+  it('TC-15: force=true fires reconcile even when planned-ahead count >= threshold', async () => {
+    const db = makeDb([{ n: 5 }]); // well above PLAN_TRIGGER_THRESHOLD
+
+    const reconcileRoadmap = vi.spyOn(service, 'reconcileRoadmap').mockResolvedValue(true);
+    vi.spyOn(service, 'buildDirective').mockResolvedValue('directive');
+
+    await service.planAndDirect({
+      ...baseArgs,
+      providerConfig: makeProvider(),
+      model: 'gpt-4',
+      db: db as unknown as import('../database.js').ProjectDatabase,
+      recentStory: 'some recent story',
+      generationToken: 1,
+      isCurrentToken: () => true,
+      plan: true,
+      force: true,
+      directorBrief: '走向情感拉扯與情慾',
+    });
+
+    expect(reconcileRoadmap).toHaveBeenCalledOnce();
+  });
+
+  // ── TC-16: directorBrief injected into reconcile prompt; technique persisted ──
+  it('TC-16: reconcile injects the brief into the system prompt and persists technique', async () => {
+    const now = new Date().toISOString();
+    mockListEvents.mockReturnValue([]); // no existing director beats
+
+    const insertedArgs: unknown[][] = [];
+    const prepareMock = vi.fn().mockImplementation((sql: string) => {
+      if (sql.includes('INSERT')) {
+        return { run: vi.fn().mockImplementation((...args: unknown[]) => { insertedArgs.push(args); }) };
+      }
+      return { run: vi.fn(), get: vi.fn().mockReturnValue({ n: 0 }), all: vi.fn().mockReturnValue([]) };
+    });
+    const db = makeTxDb(prepareMock) as unknown as import('../database.js').ProjectDatabase;
+
+    let capturedSystem = '';
+    const aiClient: AiClient = {
+      chat: {
+        completions: {
+          create: vi.fn().mockImplementation(async (params: { messages: Array<{ role: string; content: string }> }) => {
+            capturedSystem = String(params.messages.find(m => m.role === 'system')?.content ?? '');
+            return {
+              choices: [{ message: { content: JSON.stringify({
+                keep: [], discard: [],
+                new: [{ name: '越界的觸碰', description: '兩人獨處時的試探', storyTimestamp: '', participatingCharacters: ['主角'], technique: '特寫推近' }],
+              }) } }],
+            };
+          }),
+        },
+      },
+    };
+
+    const result = await service.reconcileRoadmap(
+      db, 'proj-1', 'branch-1', 'recent story',
+      1, () => true,
+      makeProvider(), 'gpt-4', '', '走向情感拉扯與情慾', aiClient,
+    );
+
+    expect(result).toBe(true);
+    // Brief surfaced in the system prompt
+    expect(capturedSystem).toContain('走向情感拉扯與情慾');
+    // horizon persisted at index 8, technique at index 9 (column order:
+    // …participating_characters, status, horizon, source, technique, …)
+    expect(insertedArgs.length).toBe(1);
+    expect(insertedArgs[0][8]).toBe('mid'); // model omitted horizon → normalized default
+    expect(insertedArgs[0][9]).toBe('特寫推近');
+    // void unused now
+    void now;
+  });
+
+  // ── TC-17: buildDirective injects the brief and surfaces beat technique ──────
+  it('TC-17: buildDirective injects the brief and includes the beat technique', async () => {
+    const now = new Date().toISOString();
+    mockListEvents.mockReturnValue([
+      { id: 'd1', name: '曖昧的對視', description: '欲言又止', status: 'planned' as const, source: 'director' as const, participatingCharacters: [], storyTimestamp: '', technique: '空鏡', projectId: 'proj-1', branchId: 'branch-1', impact: '', paragraphId: null, createdAt: now, updatedAt: now },
+    ]);
+
+    let capturedSystem = '';
+    let capturedUser = '';
+    const aiClient: AiClient = {
+      chat: {
+        completions: {
+          create: vi.fn().mockImplementation(async (params: { messages: Array<{ role: string; content: string }> }) => {
+            capturedSystem = String(params.messages.find(m => m.role === 'system')?.content ?? '');
+            capturedUser = String(params.messages.find(m => m.role === 'user')?.content ?? '');
+            return { choices: [{ message: { content: 'directive' } }] };
+          }),
+        },
+      },
+    };
+
+    const db = makeTxDb(
+      vi.fn().mockReturnValue({ run: vi.fn(), get: vi.fn().mockReturnValue({ n: 0 }), all: vi.fn().mockReturnValue([]) }),
+    ) as unknown as import('../database.js').ProjectDatabase;
+
+    await service.buildDirective(db, 'proj-1', 'branch-1', 'some story', '', '走向情感拉扯與情慾', makeProvider(), 'gpt-4', aiClient);
+
+    expect(capturedSystem).toContain('走向情感拉扯與情慾');
+    // technique surfaced alongside the beat in the roadmap text
+    expect(capturedUser).toContain('空鏡');
+  });
+
+  // ── TC-18: reconcile re-tiers a kept beat (mid→short) without deleting it ─────
+  it('TC-18: applies retier as an UPDATE on the kept director beat, no delete', async () => {
+    const now = new Date().toISOString();
+    mockListEvents.mockReturnValue([
+      { id: 'd1', name: 'Beat 1', description: '', status: 'planned' as const, source: 'director' as const, horizon: 'mid' as const, participatingCharacters: [], storyTimestamp: '', projectId: 'proj-1', branchId: 'branch-1', impact: '', technique: '', orderInHorizon: 0, paragraphId: null, createdAt: now, updatedAt: now },
+    ]);
+
+    const updates: unknown[][] = [];
+    const deletedIds: string[] = [];
+    const prepareMock = vi.fn().mockImplementation((sql: string) => {
+      if (sql.includes('UPDATE')) {
+        return { run: vi.fn().mockImplementation((...args: unknown[]) => { updates.push(args); }) };
+      }
+      if (sql.includes('DELETE')) {
+        return { run: vi.fn().mockImplementation((...args: unknown[]) => { deletedIds.push(args[0] as string); }) };
+      }
+      return { run: vi.fn(), get: vi.fn().mockReturnValue({ n: 0 }), all: vi.fn().mockReturnValue([]) };
+    });
+    const db = makeTxDb(prepareMock) as unknown as import('../database.js').ProjectDatabase;
+
+    const reconcileResponse = JSON.stringify({
+      keep: [0], discard: [], retier: [{ index: 0, horizon: 'short' }], new: [],
+    });
+
+    const result = await service.reconcileRoadmap(
+      db, 'proj-1', 'branch-1', 'recent story',
+      1, () => true,
+      makeProvider(), 'gpt-4', '', '', makeAiClient(reconcileResponse),
+    );
+
+    expect(result).toBe(true);
+    // UPDATE called with new horizon='short' (arg 0) targeting d1 (arg 2)
+    expect(updates.length).toBe(1);
+    expect(updates[0][0]).toBe('short');
+    expect(updates[0][2]).toBe('d1');
+    // Kept + re-tiered beat must NOT be implicitly discarded
+    expect(deletedIds).not.toContain('d1');
+  });
+
+  // ── TC-19: new beat persists the model-assigned horizon ──────────────────────
+  it('TC-19: new beat horizon is persisted at INSERT index 8', async () => {
+    mockListEvents.mockReturnValue([]);
+    const insertedArgs: unknown[][] = [];
+    const prepareMock = vi.fn().mockImplementation((sql: string) => {
+      if (sql.includes('INSERT')) {
+        return { run: vi.fn().mockImplementation((...args: unknown[]) => { insertedArgs.push(args); }) };
+      }
+      return { run: vi.fn(), get: vi.fn().mockReturnValue({ n: 0 }), all: vi.fn().mockReturnValue([]) };
+    });
+    const db = makeTxDb(prepareMock) as unknown as import('../database.js').ProjectDatabase;
+
+    const reconcileResponse = JSON.stringify({
+      keep: [], discard: [], retier: [],
+      new: [{ name: '即將開戰', description: '', storyTimestamp: '', participatingCharacters: [], technique: '', horizon: 'short' }],
+    });
+
+    await service.reconcileRoadmap(
+      db, 'proj-1', 'branch-1', 'recent story',
+      1, () => true,
+      makeProvider(), 'gpt-4', '', '', makeAiClient(reconcileResponse),
+    );
+
+    expect(insertedArgs.length).toBe(1);
+    expect(insertedArgs[0][8]).toBe('short');
   });
 });

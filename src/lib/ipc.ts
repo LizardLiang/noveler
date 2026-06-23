@@ -100,6 +100,8 @@ export const aiApi = {
     ipcInvoke<IpcResult<{ paragraphId: string }>>('ai:generate', req),
   cancel: (projectId: string) =>
     ipcInvoke<IpcResult<void>>('ai:cancel', projectId),
+  replanDirector: (projectId: string, branchId: string) =>
+    ipcInvoke<IpcResult<void>>('director:replan', { projectId, branchId }),
   testConnection: (providerId?: string) =>
     ipcInvoke<IpcResult<{ message: string }>>('ai:testConnection', providerId),
   getModels: (req: GetModelsRequest) =>
@@ -130,6 +132,8 @@ export const paragraphApi = {
     ipcInvoke<IpcResult<ParagraphMeta>>('paragraph:createOpening', projectId, branchId, content),
   switchVersion: (projectId: string, paragraphId: string, version: number) =>
     ipcInvoke<IpcResult<void>>('paragraph:switchVersion', projectId, paragraphId, version),
+  edit: (projectId: string, branchId: string, paragraphId: string, content: string) =>
+    ipcInvoke<IpcResult<ParagraphMeta>>('paragraph:edit', projectId, branchId, paragraphId, content),
   rollback: (projectId: string, branchId: string, paragraphId: string) =>
     ipcInvoke<IpcResult<void>>('paragraph:rollback', projectId, branchId, paragraphId),
   regenerate: (req: GenerateRequest & { targetParagraphId: string }) =>

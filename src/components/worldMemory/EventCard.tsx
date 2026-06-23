@@ -270,6 +270,23 @@ export function EventCard({ event, onUpdate, onDelete, onMoveUp, onMoveDown, can
                     {zhTW.worldMemory.eventSourceDirector}
                   </span>
                 )}
+                {event.technique && (
+                  <span
+                    title={zhTW.worldMemory.eventTechniqueHint}
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 600,
+                      padding: '1px 7px',
+                      borderRadius: 10,
+                      background: 'var(--color-bg-tertiary, var(--color-bg-secondary))',
+                      border: '1px solid var(--color-border)',
+                      color: 'var(--color-text-secondary)',
+                      letterSpacing: '0.5px',
+                    }}
+                  >
+                    🎬 {event.technique}
+                  </span>
+                )}
               </div>
               {event.storyTimestamp && (
                 <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 6 }}>

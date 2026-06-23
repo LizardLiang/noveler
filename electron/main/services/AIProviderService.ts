@@ -183,6 +183,19 @@ class AIProviderService {
       let usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
       for await (const chunk of stream) {
+        // OpenRouter (and some OpenAI-compatible gateways) report mid-stream failures —
+        // e.g. 402 insufficient credits — as an in-band chunk carrying an `error` field
+        // over a 200 response, instead of throwing. The standard loop below only reads
+        // delta.content, so without this guard such a chunk is silently ignored and the
+        // stream ends as an empty "success" (empty paragraph, no error surfaced).
+        const inbandError = (chunk as unknown as {
+          error?: { code?: number | string; message?: string };
+        }).error;
+        if (inbandError) {
+          options.onError(this.classifyStreamError(inbandError));
+          return;
+        }
+
         // Thinking models split output into delta.content (the answer/story) and
         // delta.reasoning_content (the thinking). Content is the saved story;
         // reasoning is streamed on a separate channel for the UI's thinking box
@@ -244,6 +257,25 @@ class AIProviderService {
       const aiError = this.classifyError(err);
       return { success: false, message: aiError.message };
     }
+  }
+
+  // Classify an in-band streaming error (a chunk's `error` field), mirroring the HTTP
+  // status mapping in classifyError so the user sees the same wording either way.
+  private classifyStreamError(e: { code?: number | string; message?: string }): AIError {
+    const status = typeof e.code === 'number' ? e.code : Number(e.code);
+    if (status === 401) {
+      return { code: 'AUTH_ERROR', message: 'API 金鑰無效（401）', status: 401 };
+    }
+    if (status === 402) {
+      return { code: 'RATE_LIMIT', message: `額度不足或已超出使用限額（402）${e.message ? `：${e.message}` : ''}`, status: 402 };
+    }
+    if (status === 429) {
+      return { code: 'RATE_LIMIT', message: '已超出使用限額或速率限制（429）', status: 429 };
+    }
+    if (status === 404) {
+      return { code: 'MODEL_NOT_FOUND', message: '找不到指定的模型', status: 404 };
+    }
+    return { code: 'UNKNOWN', message: e.message || '供應商回傳錯誤', ...(Number.isFinite(status) ? { status } : {}) };
   }
 
   private classifyError(err: unknown): AIError {

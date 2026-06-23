@@ -75,6 +75,9 @@ export interface StoryEvent {
   // Manual ordering within a horizon bucket (lower = sooner).
   orderInHorizon: number;
   source: 'author' | 'director';
+  // Cinematic/writing technique tag the director picks for a planned beat
+  // (e.g. 平行剪輯／蒙太奇／空鏡). Empty for author beats and occurred events.
+  technique: string;
   paragraphId: string | null;
   createdAt: string;
   updatedAt: string;

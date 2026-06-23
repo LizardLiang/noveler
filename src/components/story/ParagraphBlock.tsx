@@ -28,10 +28,13 @@ interface ParagraphBlockProps {
   isRefining?: boolean;
   isRefined?: boolean;
   onDelete?: (id: string) => void;
-  onRegenerate?: (id: string) => void;
+  /** Regenerate this paragraph; `extraPrompt` is a one-off author steer for this rewrite only. */
+  onRegenerate?: (id: string, extraPrompt?: string) => void;
   onRollback?: (id: string) => void;
   onCopy?: (content: string) => void;
   onSwitchVersion?: (id: string, version: number) => void;
+  /** Save an author edit; receives the full content (prose + preserved world-changes tail). */
+  onEdit?: (id: string, content: string) => void;
 }
 
 export const ParagraphBlock = memo(function ParagraphBlock({
@@ -47,14 +50,55 @@ export const ParagraphBlock = memo(function ParagraphBlock({
   onRollback,
   onCopy,
   onSwitchVersion,
+  onEdit,
 }: ParagraphBlockProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [metaExpanded, setMetaExpanded] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [thinkingExpanded, setThinkingExpanded] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editText, setEditText] = useState('');
+  const [isRegenPrompting, setIsRegenPrompting] = useState(false);
+  const [regenPrompt, setRegenPrompt] = useState('');
 
   const rawContent = isStreaming ? (streamingContent ?? '') : content;
   const displayContent = rawContent.split('---WORLD_CHANGES---')[0].trimEnd();
+
+  // Preserve any ---WORLD_CHANGES--- metadata block when saving an author edit, so the
+  // edited paragraph stays structurally identical to a generated one.
+  const wcIndex = rawContent.indexOf('---WORLD_CHANGES---');
+  const worldChangesTail = wcIndex >= 0 ? rawContent.slice(wcIndex) : '';
+
+  const handleStartEdit = useCallback(() => {
+    setEditText(displayContent);
+    setIsEditing(true);
+  }, [displayContent]);
+
+  const handleSaveEdit = useCallback(() => {
+    const prose = editText.trimEnd();
+    const full = worldChangesTail ? `${prose}\n${worldChangesTail}` : prose;
+    onEdit?.(paragraph.id, full);
+    setIsEditing(false);
+  }, [editText, worldChangesTail, onEdit, paragraph.id]);
+
+  const handleCancelEdit = useCallback(() => {
+    setIsEditing(false);
+  }, []);
+
+  const handleStartRegen = useCallback(() => {
+    setRegenPrompt('');
+    setIsRegenPrompting(true);
+  }, []);
+
+  const handleSubmitRegen = useCallback(() => {
+    const extra = regenPrompt.trim();
+    onRegenerate?.(paragraph.id, extra || undefined);
+    setIsRegenPrompting(false);
+  }, [regenPrompt, onRegenerate, paragraph.id]);
+
+  const handleCancelRegen = useCallback(() => {
+    setIsRegenPrompting(false);
+  }, []);
 
   const isDetached = paragraph.status === 'detached';
   const isDraft = paragraph.status === 'draft';
@@ -307,11 +351,134 @@ export const ParagraphBlock = memo(function ParagraphBlock({
             )}
           </div>
 
-          {/* Content */}
-          <StreamingTextRenderer
-            content={displayContent}
-            isStreaming={isStreaming && isGenerating}
-          />
+          {/* Content — editable textarea in edit mode, otherwise rendered prose */}
+          {isEditing ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <textarea
+                value={editText}
+                onChange={e => setEditText(e.target.value)}
+                autoFocus
+                rows={Math.min(20, Math.max(4, editText.split('\n').length + 1))}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1px solid var(--color-accent)',
+                  background: 'var(--color-bg-secondary)',
+                  color: 'var(--color-text-primary)',
+                  fontSize: 14,
+                  lineHeight: 1.7,
+                  outline: 'none',
+                  resize: 'vertical',
+                  fontFamily: 'inherit',
+                  boxSizing: 'border-box',
+                }}
+              />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button
+                  onClick={handleCancelEdit}
+                  style={{
+                    padding: '5px 14px',
+                    borderRadius: 'var(--radius-md)',
+                    border: '1px solid var(--color-border)',
+                    background: 'transparent',
+                    color: 'var(--color-text-secondary)',
+                    cursor: 'pointer',
+                    fontSize: 13,
+                  }}
+                >
+                  {zhTW.paragraph.editCancel}
+                </button>
+                <button
+                  onClick={handleSaveEdit}
+                  style={{
+                    padding: '5px 14px',
+                    borderRadius: 'var(--radius-md)',
+                    border: 'none',
+                    background: 'var(--color-accent)',
+                    color: 'white',
+                    cursor: 'pointer',
+                    fontSize: 13,
+                    fontWeight: 500,
+                  }}
+                >
+                  {zhTW.paragraph.editSave}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <StreamingTextRenderer
+              content={displayContent}
+              isStreaming={isStreaming && isGenerating}
+            />
+          )}
+
+          {/* Regenerate prompt — optional one-off steer for this rewrite */}
+          {isRegenPrompting && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+              <textarea
+                value={regenPrompt}
+                onChange={e => setRegenPrompt(e.target.value)}
+                autoFocus
+                placeholder={zhTW.paragraph.regenPromptPlaceholder}
+                title={zhTW.paragraph.regenPromptHint}
+                rows={3}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    handleSubmitRegen();
+                  } else if (e.key === 'Escape') {
+                    handleCancelRegen();
+                  }
+                }}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1px solid var(--color-accent)',
+                  background: 'var(--color-bg-secondary)',
+                  color: 'var(--color-text-primary)',
+                  fontSize: 13,
+                  lineHeight: 1.6,
+                  outline: 'none',
+                  resize: 'vertical',
+                  fontFamily: 'inherit',
+                  boxSizing: 'border-box',
+                }}
+              />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button
+                  onClick={handleCancelRegen}
+                  style={{
+                    padding: '5px 14px',
+                    borderRadius: 'var(--radius-md)',
+                    border: '1px solid var(--color-border)',
+                    background: 'transparent',
+                    color: 'var(--color-text-secondary)',
+                    cursor: 'pointer',
+                    fontSize: 13,
+                  }}
+                >
+                  {zhTW.paragraph.regenCancel}
+                </button>
+                <button
+                  onClick={handleSubmitRegen}
+                  style={{
+                    padding: '5px 14px',
+                    borderRadius: 'var(--radius-md)',
+                    border: 'none',
+                    background: 'var(--color-accent)',
+                    color: 'white',
+                    cursor: 'pointer',
+                    fontSize: 13,
+                    fontWeight: 500,
+                  }}
+                >
+                  {zhTW.paragraph.regenSubmit}
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Metadata (expandable) */}
           {metaExpanded && (
@@ -340,7 +507,7 @@ export const ParagraphBlock = memo(function ParagraphBlock({
         </div>
 
         {/* Toolbar — visible on hover, absolutely positioned to avoid layout shift */}
-        {isHovered && !isGenerating && (
+        {isHovered && !isGenerating && !isEditing && !isRegenPrompting && (
           <div
             style={{
               position: 'absolute',
@@ -376,11 +543,24 @@ export const ParagraphBlock = memo(function ParagraphBlock({
               </svg>
             </ToolbarButton>
 
-            {/* Regenerate (AI only) */}
+            {/* Edit (author rewrite → new version) */}
+            {onEdit && !isDetached && (
+              <ToolbarButton
+                title={zhTW.paragraph.edit}
+                onClick={handleStartEdit}
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9.5 2.5l2 2L5 11l-2.5.5L3 9z" />
+                  <line x1="8.5" y1="3.5" x2="10.5" y2="5.5" />
+                </svg>
+              </ToolbarButton>
+            )}
+
+            {/* Regenerate (AI only) — opens an inline extra-prompt box */}
             {paragraph.type === 'ai' && onRegenerate && (
               <ToolbarButton
                 title={zhTW.chat.regenerate}
-                onClick={() => onRegenerate(paragraph.id)}
+                onClick={handleStartRegen}
               >
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                   <path d="M2 7A5 5 0 1 1 7 12" />

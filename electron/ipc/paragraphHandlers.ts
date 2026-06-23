@@ -159,6 +159,31 @@ export function registerParagraphHandlers(): void {
     },
   );
 
+  // Edit — author manually rewrites a paragraph. Saves a NEW version (the original
+  // is preserved as a prior version) and makes it active, so the next generation —
+  // which reads the active version via getParagraphContent — uses the edited text.
+  ipcMain.handle(
+    IPC_CHANNELS.PARAGRAPH_EDIT,
+    (_event, projectId: string, branchId: string, paragraphId: string, content: string): IpcResult<ParagraphRecord> => {
+      try {
+        const db = getOpenProject(projectId);
+        const projectPath = getProjectStoragePath(projectId);
+        if (!db || !projectPath) {
+          return { success: false, error: { code: 'PROJECT_NOT_OPEN', message: '專案未開啟' } };
+        }
+        // modelUsed omitted (author edit, not a model output); a new active version is created.
+        paragraphService.addNewVersion(db, projectPath, branchId, paragraphId, content);
+        const updated = paragraphService.getParagraph(db, paragraphId);
+        if (!updated) {
+          return { success: false, error: { code: 'PARAGRAPH_NOT_FOUND', message: '段落不存在' } };
+        }
+        return { success: true, data: updated };
+      } catch (err) {
+        return { success: false, error: { code: 'PARAGRAPH_EDIT_ERROR', message: '編輯段落失敗', details: err } };
+      }
+    },
+  );
+
   // Rollback — mark paragraphs after a point as detached + rollback world memory
   ipcMain.handle(
     IPC_CHANNELS.PARAGRAPH_ROLLBACK,

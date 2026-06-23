@@ -703,11 +703,13 @@ export async function applyWorldChange(
 // ---- Helper: apply plot-fulfillment results + advance the horizon queue ----
 
 /**
- * Flips fulfilled short-term planned events to `occurred` (linking the paragraph
- * that enacted them), then slides the queue forward: for each fulfilled event,
- * promote the next `mid` event → `short` and the next `long` event → `mid`
- * (lowest order_in_horizon first). All writes are recorded in the changelog so
- * detach/rollback reverts them.
+ * Flips fulfilled planned beats to `occurred` (linking the paragraph that enacted
+ * them). Author `short` beats also slide the author queue forward: for each
+ * fulfilled author beat, promote the next `mid` → `short` and `long` → `mid`
+ * (lowest order_in_horizon first, source-scoped so director beats are untouched).
+ * Director beats are marked occurred at any horizon but never drive promotion —
+ * their horizon advancement is owned by the director's reconcile. All writes are
+ * recorded in the changelog so detach/rollback reverts them.
  *
  * Returns true when any event changed (so the caller can refresh the renderer).
  */
@@ -723,11 +725,20 @@ export function applyPlotFulfillment(
 
   let changed = 0;
 
-  // 1. Mark fulfilled short events as occurred.
-  let promotionsNeeded = 0;
+  // 1. Mark fulfilled planned beats as occurred.
+  //   - Author beats: only the steered `short` bucket counts, and each fulfillment
+  //     advances the author horizon queue (below).
+  //   - Director beats: any horizon counts (the directive steers toward all of them);
+  //     horizon advancement is owned by the director's reconcile, NOT a forced queue
+  //     push here — so these never trigger promotion.
+  let authorPromotionsNeeded = 0;
   for (const id of fulfilledIds) {
     const existing = service.getEvent(db, id);
-    if (!existing || existing.status !== 'planned' || existing.horizon !== 'short') continue;
+    if (!existing || existing.status !== 'planned') continue;
+
+    const isDirector = existing.source === 'director';
+    if (!isDirector && existing.horizon !== 'short') continue;
+
     const snapshot = { ...existing };
     service.updateEvent(db, id, { status: 'occurred', paragraphId });
     recordChangelog(db, projectId, branchId, paragraphId, 'event', id, 'update', snapshot, {
@@ -735,17 +746,18 @@ export function applyPlotFulfillment(
       paragraphId,
     });
     changed++;
-    promotionsNeeded++;
+    if (!isDirector) authorPromotionsNeeded++;
   }
 
   if (changed === 0) return false;
 
-  // 2. Advance the queue: promote `promotionsNeeded` mid→short, then long→mid.
+  // 2. Advance the AUTHOR queue: promote `authorPromotionsNeeded` mid→short, then
+  //    long→mid. Scoped to source!=='director' so director beats are never moved here.
   const promote = (from: 'mid' | 'long', to: 'short' | 'mid', count: number): void => {
     if (count <= 0) return;
     const candidates = service
       .listEvents(db, projectId, branchId)
-      .filter(e => e.status === 'planned' && e.horizon === from)
+      .filter(e => e.status === 'planned' && e.horizon === from && e.source !== 'director')
       .sort((a, b) =>
         a.orderInHorizon !== b.orderInHorizon
           ? a.orderInHorizon - b.orderInHorizon
@@ -759,8 +771,8 @@ export function applyPlotFulfillment(
     }
   };
 
-  promote('mid', 'short', promotionsNeeded);
-  promote('long', 'mid', promotionsNeeded);
+  promote('mid', 'short', authorPromotionsNeeded);
+  promote('long', 'mid', authorPromotionsNeeded);
 
   return true;
 }

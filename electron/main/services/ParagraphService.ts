@@ -173,6 +173,12 @@ class ParagraphService {
     // We keep the files for potential recovery; Phase 4 can handle cleanup
   }
 
+  getParagraph(db: ProjectDatabase, paragraphId: string): ParagraphRecord | null {
+    const row = db.prepare('SELECT * FROM paragraph_meta WHERE id=?').get(paragraphId) as
+      Record<string, unknown> | undefined;
+    return row ? this.rowToRecord(row) : null;
+  }
+
   listParagraphs(db: ProjectDatabase, branchId: string): ParagraphRecord[] {
     const rows = db.prepare(
       'SELECT * FROM paragraph_meta WHERE branch_id=? ORDER BY position ASC',

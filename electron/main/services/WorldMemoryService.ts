@@ -75,6 +75,7 @@ function rowToEvent(row: Record<string, unknown>): StoryEvent {
     horizon: normalizeHorizon(row.horizon),
     orderInHorizon: Number(row.order_in_horizon ?? 0),
     source: row.source === 'director' ? 'director' : 'author',
+    technique: String(row.technique ?? ''),
     paragraphId: row.paragraph_id ? String(row.paragraph_id) : null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -312,6 +313,7 @@ export class WorldMemoryService {
       horizon?: EventHorizon;
       orderInHorizon?: number;
       source?: 'author' | 'director';
+      technique?: string;
       paragraphId?: string | null;
     },
   ): StoryEvent {
@@ -319,8 +321,8 @@ export class WorldMemoryService {
     const now = new Date().toISOString();
     db.prepare(
       `INSERT INTO events
-        (id, project_id, branch_id, name, description, story_timestamp, impact, participating_characters, status, horizon, order_in_horizon, source, paragraph_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, project_id, branch_id, name, description, story_timestamp, impact, participating_characters, status, horizon, order_in_horizon, source, technique, paragraph_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
       projectId,
@@ -334,6 +336,7 @@ export class WorldMemoryService {
       normalizeHorizon(data.horizon),
       Number(data.orderInHorizon ?? 0),
       data.source === 'director' ? 'director' : 'author',
+      String(data.technique ?? ''),
       data.paragraphId != null ? String(data.paragraphId) : null,
       now,
       now,
@@ -353,6 +356,7 @@ export class WorldMemoryService {
       status?: 'occurred' | 'planned';
       horizon?: EventHorizon;
       orderInHorizon?: number;
+      technique?: string;
       paragraphId?: string | null;
     },
   ): StoryEvent | null {
@@ -365,7 +369,7 @@ export class WorldMemoryService {
       updates.paragraphId !== undefined ? updates.paragraphId : existing.paragraphId;
     db.prepare(
       `UPDATE events SET
-        name=?, description=?, story_timestamp=?, impact=?, participating_characters=?, status=?, horizon=?, order_in_horizon=?, paragraph_id=?, updated_at=?
+        name=?, description=?, story_timestamp=?, impact=?, participating_characters=?, status=?, horizon=?, order_in_horizon=?, technique=?, paragraph_id=?, updated_at=?
        WHERE id=?`,
     ).run(
       String(updates.name ?? existing.name),
@@ -376,6 +380,7 @@ export class WorldMemoryService {
       nextStatus === 'planned' ? 'planned' : 'occurred',
       normalizeHorizon(updates.horizon ?? existing.horizon),
       Number(updates.orderInHorizon ?? existing.orderInHorizon),
+      String(updates.technique ?? existing.technique),
       nextParagraphId != null ? String(nextParagraphId) : null,
       now,
       id,

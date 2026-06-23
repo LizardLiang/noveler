@@ -186,6 +186,9 @@ export interface GenerateRequest {
   modelOverride?: string;
   /** Per-generation target word count; overrides the project default when set. */
   targetWordCount?: number;
+  /** One-off director steer for THIS paragraph only. Not persisted; does not
+   *  touch the standing brief or the roadmap. Fed into the director's directive. */
+  directorNote?: string;
 }
 
 // ===== Test Story Generator (設定頁彈窗，獨立於專案) =====

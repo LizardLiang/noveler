@@ -11,12 +11,14 @@ import { ParagraphBlock } from '@/components/story/ParagraphBlock';
 import { ContextBudgetIndicator } from '@/components/story/ContextBudgetIndicator';
 import { StorySuggestions } from '@/components/story/StorySuggestions';
 import { OpeningInput } from '@/components/story/OpeningInput';
+import { DirectorPanel } from '@/components/story/DirectorPanel';
 import { SystemPromptEditor } from '@/components/settings/SystemPromptEditor';
 import { WorldRulesEditor } from '@/components/settings/WorldRulesEditor';
 import { WritingStyleConfig } from '@/components/settings/WritingStyleConfig';
 import { DialogueEditorConfig } from '@/components/settings/DialogueEditorConfig';
 import { NarrationEditorConfig } from '@/components/settings/NarrationEditorConfig';
 import { PlotComplianceConfig } from '@/components/settings/PlotComplianceConfig';
+import { FontSizeControl } from '@/components/settings/FontSizeControl';
 import { GlobalSearch } from '@/components/search/GlobalSearch';
 import { StoryStats } from '@/components/stats/StoryStats';
 import { zhTW } from '@/i18n/zh-TW';
@@ -65,11 +67,14 @@ export function StoryPage() {
   const [contextBudget, setContextBudget] = useState<ContextBudgetInfo | null>(null);
   const [truncationWarning, setTruncationWarning] = useState<{ count: number } | null>(null);
   const [showStorySettings, setShowStorySettings] = useState(false);
+  const [showDirector, setShowDirector] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [compacting, setCompacting] = useState(false);
   // Per-generation target word count override; undefined = use the project default.
   const [genWordCount, setGenWordCount] = useState<number | undefined>(undefined);
+  // One-off director steer for the next paragraph only (cleared after each send).
+  const [directorNote, setDirectorNote] = useState('');
   // Cascade delete dialog state
   const [cascadeDialog, setCascadeDialog] = useState<{
     paragraphId: string;
@@ -319,16 +324,24 @@ export function StoryPage() {
     setCurrentPhase('preparing');
     shouldAutoScrollRef.current = true;
 
+    // One-off director note rides with this generation only, then is cleared.
+    const note = directorNote.trim();
+
     const result = await aiApi.generate({
       projectId,
       branchId: currentBranchId ?? '',
       userMessage: message,
       targetWordCount: genWordCount,
+      directorNote: note || undefined,
     });
+
+    if (note) setDirectorNote('');
 
     if (!result.success) {
       setGenerating(false);
-      // Error will be shown via stream error event
+      // Surface IPC-level failures (no provider, handler threw, etc.). Mid-stream
+      // failures are surfaced separately via the stream:error event in useStream.
+      setGenerationError(result.error.message);
     } else {
       // If we didn't have a branchId yet, try to refresh paragraphs
       // The branch was auto-created during generate
@@ -341,7 +354,7 @@ export function StoryPage() {
         }
       }
     }
-  }, [projectId, isGenerating, currentBranchId, genWordCount, setGenerating, setCurrentPhase, setCurrentBranchId, clearSuggestions]);
+  }, [projectId, isGenerating, currentBranchId, genWordCount, directorNote, setGenerating, setCurrentPhase, setCurrentBranchId, clearSuggestions, setGenerationError]);
 
   // Create opening (開場白) — save the user's opening prose as the story's first
   // paragraph. The suggestions effect (watching paragraphs.length) then auto-fetches
@@ -397,7 +410,7 @@ export function StoryPage() {
   }, [projectId, currentBranchId, removeParagraph]);
 
   // Regenerate paragraph
-  const handleRegenerate = useCallback(async (paragraphId: string) => {
+  const handleRegenerate = useCallback(async (paragraphId: string, extraPrompt?: string) => {
     if (!projectId || !currentBranchId || isGenerating) return;
     setGenerating(true);
     setCurrentPhase('preparing');
@@ -409,10 +422,14 @@ export function StoryPage() {
       userMessage: '',
       targetParagraphId: paragraphId,
       targetWordCount: genWordCount,
+      // One-off author steer for this rewrite only (not persisted, roadmap untouched).
+      directorNote: extraPrompt,
     });
 
     if (!result.success) {
       setGenerating(false);
+      // Surface IPC-level failures; mid-stream failures arrive via stream:error.
+      setGenerationError(result.error.message);
       return;
     }
 
@@ -428,7 +445,7 @@ export function StoryPage() {
       });
     }
     loadAll(projectId, currentBranchId);
-  }, [projectId, currentBranchId, isGenerating, genWordCount, paragraphs, updateParagraph, loadAll, setGenerating, setCurrentPhase]);
+  }, [projectId, currentBranchId, isGenerating, genWordCount, paragraphs, updateParagraph, loadAll, setGenerating, setCurrentPhase, setGenerationError]);
 
   // Rollback
   const handleRollback = useCallback(async (paragraphId: string) => {
@@ -462,6 +479,19 @@ export function StoryPage() {
       }
     }
   }, [projectId, currentBranchId, updateParagraph, setParagraphContent]);
+
+  // Edit paragraph — saves a new version and makes it active; next generation reads it.
+  const handleEdit = useCallback(async (paragraphId: string, content: string) => {
+    if (!projectId || !currentBranchId) return;
+    const result = await paragraphApi.edit(projectId, currentBranchId, paragraphId, content);
+    if (result.success) {
+      const meta = result.data as unknown as ParagraphMeta;
+      updateParagraph(paragraphId, { activeVersion: meta.activeVersion, totalVersions: meta.totalVersions });
+      setParagraphContent(paragraphId, content);
+    } else {
+      setGenerationError(result.error.message);
+    }
+  }, [projectId, currentBranchId, updateParagraph, setParagraphContent, setGenerationError]);
 
   // Copy text to clipboard
   const handleCopy = useCallback((content: string) => {
@@ -647,6 +677,27 @@ export function StoryPage() {
             <rect x="1" y="7" width="3" height="6" rx="0.5" />
             <rect x="5.5" y="4" width="3" height="9" rx="0.5" />
             <rect x="10" y="1" width="3" height="12" rx="0.5" />
+          </svg>
+        </button>
+
+        {/* Director (創作走向 brief + 大綱 re-plan) */}
+        <button
+          onClick={() => setShowDirector(v => !v)}
+          title={zhTW.directorPanel.title}
+          style={{
+            background: showDirector ? 'var(--color-accent-subtle)' : 'transparent',
+            border: showDirector ? '1px solid var(--color-accent)' : '1px solid transparent',
+            color: showDirector ? 'var(--color-accent)' : 'var(--color-text-tertiary)',
+            cursor: 'pointer',
+            padding: '4px 6px',
+            borderRadius: 'var(--radius-sm)',
+            display: 'flex',
+            alignItems: 'center',
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
+            <rect x="1" y="5" width="12" height="8" rx="0.5" />
+            <path d="M1 5l2.5-3.5 3 2.5M5.5 4l3-2.5 3 2.5M1 8h12" />
           </svg>
         </button>
 
@@ -858,6 +909,32 @@ export function StoryPage() {
         </div>
       )}
 
+      {/* Director panel */}
+      {showDirector && projectId && currentBranchId && (
+        <div
+          style={{
+            padding: '16px 24px',
+            background: 'var(--color-bg-secondary)',
+            borderBottom: '1px solid var(--color-border)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 24,
+            maxWidth: 800,
+            width: '100%',
+            alignSelf: 'center',
+            boxSizing: 'border-box',
+            minHeight: 0,
+            overflowY: 'auto',
+          }}
+        >
+          <DirectorPanel
+            projectId={projectId}
+            branchId={currentBranchId}
+            disabled={!hasActiveProvider}
+          />
+        </div>
+      )}
+
       {/* Story settings panel */}
       {showStorySettings && projectId && (
         <div
@@ -876,6 +953,7 @@ export function StoryPage() {
             overflowY: 'auto',
           }}
         >
+          <FontSizeControl />
           <WorldRulesEditor projectId={projectId} />
           <SystemPromptEditor projectId={projectId} />
           <WritingStyleConfig projectId={projectId} />
@@ -971,6 +1049,7 @@ export function StoryPage() {
                   onRollback={handleRollback}
                   onCopy={handleCopy}
                   onSwitchVersion={handleSwitchVersion}
+                  onEdit={handleEdit}
                 />
               </div>
             );
@@ -1185,6 +1264,31 @@ export function StoryPage() {
               <line x1="11" y1="3" x2="3" y2="11" />
             </svg>
           </button>
+        </div>
+      )}
+
+      {/* One-off director note — steers only the next paragraph, then clears */}
+      {hasActiveProvider && paragraphs.length > 0 && (
+        <div style={{ maxWidth: 800, width: '100%', alignSelf: 'center', boxSizing: 'border-box', padding: '0 24px', marginBottom: 4 }}>
+          <input
+            type="text"
+            value={directorNote}
+            onChange={e => setDirectorNote(e.target.value)}
+            disabled={isGenerating}
+            placeholder={zhTW.chat.directorNotePlaceholder}
+            title={zhTW.chat.directorNoteHint}
+            style={{
+              width: '100%',
+              padding: '7px 12px',
+              borderRadius: 'var(--radius-md)',
+              border: `1px solid ${directorNote.trim() ? 'var(--color-accent)' : 'var(--color-border)'}`,
+              background: 'var(--color-bg-secondary)',
+              color: 'var(--color-text-primary)',
+              fontSize: 12,
+              outline: 'none',
+              boxSizing: 'border-box',
+            }}
+          />
         </div>
       )}
 
