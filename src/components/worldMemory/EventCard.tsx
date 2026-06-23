@@ -254,6 +254,22 @@ export function EventCard({ event, onUpdate, onDelete, onMoveUp, onMoveDown, can
                     {HORIZON_LABEL[event.horizon]}
                   </span>
                 )}
+                {event.source === 'director' && (
+                  <span
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 600,
+                      padding: '1px 7px',
+                      borderRadius: 10,
+                      background: 'var(--color-accent-subtle)',
+                      border: '1px solid var(--color-accent)',
+                      color: 'var(--color-accent)',
+                      letterSpacing: '0.5px',
+                    }}
+                  >
+                    {zhTW.worldMemory.eventSourceDirector}
+                  </span>
+                )}
               </div>
               {event.storyTimestamp && (
                 <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 6 }}>

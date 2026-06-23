@@ -156,13 +156,27 @@ class AIProviderService {
     }
 
     try {
+      // Hybrid-reasoning models on OpenRouter (e.g. deepseek-v4-flash) stream
+      // narrative into the `reasoning` field. We route reasoning to a display-only
+      // "thinking" channel that is never saved, so any story prose the model emits
+      // there is lost and the saved paragraph comes back short.
+      //
+      // `reasoning.enabled: false` tries to turn reasoning off entirely, but many
+      // models ignore it and keep reasoning anyway — the thinking box still fills
+      // with leaked story prose. `reasoning.exclude: true` is universally supported
+      // ("All models support this" per OpenRouter docs): the model still reasons
+      // internally (preserving quality) but the reasoning tokens are NEVER returned
+      // on the stream, so nothing leaks into the thinking channel and the full
+      // narrative lands in `content`. Other providers ignore the param via the guard.
+      const isOpenRouter = (this.currentConfig.baseUrl || '').includes('openrouter.ai');
       const stream = await this.client.chat.completions.create({
         model: options.model || this.currentConfig.defaultModel,
         messages: options.messages,
         ...(options.temperature != null ? { temperature: options.temperature } : {}),
+        ...(isOpenRouter ? { reasoning: { exclude: true } } : {}),
         stream: true,
         stream_options: { include_usage: true },
-      }, {
+      } as Parameters<typeof this.client.chat.completions.create>[0], {
         signal: options.signal,
       });
 

@@ -46,6 +46,40 @@ export interface GenerateRequest {
   branchId: string;
   userMessage: string;
   modelOverride?: string;
+  /** Per-generation target word count; overrides the project default when set. */
+  targetWordCount?: number;
+}
+
+// ===== 測試寫作效果（設定頁彈窗，獨立於專案） =====
+export interface TestStyle {
+  genre?: string;
+  perspective?: string;
+  tone?: string;
+  detailLevel?: string;
+  languageStyle?: string;
+  nsfw?: boolean;
+}
+
+export interface TestGenerateRequest {
+  worldview: string;
+  characterSettings: string;
+  guidance: string;
+  style: TestStyle;
+  modelOverride?: string;
+}
+
+export interface TestChunkPayload {
+  scenarioIndex: number;
+  delta: string;
+}
+
+export interface TestScenarioDonePayload {
+  scenarioIndex: number;
+}
+
+export interface TestErrorPayload {
+  scenarioIndex?: number;
+  error: { code: string; message: string };
 }
 
 export interface StreamChunkPayload {
@@ -96,10 +130,22 @@ export interface StreamCompletePayload {
 export interface SuggestionsRequest {
   projectId: string;
   branchId: string;
+  // Bypass the per-branch suggestions cache (manual regenerate).
+  force?: boolean;
 }
 
 export interface SuggestionsResponse {
   suggestions: string[];
+}
+
+export interface CompactRequest {
+  projectId: string;
+  branchId: string;
+}
+
+export interface CompactResponse {
+  summary: string;
+  compactedCount: number;
 }
 
 // ===== 上下文預算 =====
@@ -147,6 +193,27 @@ export interface SaveProviderRequest {
 export interface ProviderInfo extends Omit<AIProvider, 'createdAt' | 'updatedAt'> {
   hasApiKey: boolean;
   oauthEmail?: string;
+}
+
+export interface GetModelsRequest {
+  baseUrl: string;
+  apiKey?: string;
+  providerId?: string;
+}
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  contextLength?: number;
+  pricePrompt?: number;
+  priceCompletion?: number;
+  isFree: boolean;
+}
+
+export interface CreditsInfo {
+  totalCredits: number;
+  totalUsage: number;
+  remaining: number;
 }
 
 // ===== 自動儲存 =====

@@ -15,6 +15,9 @@ import { curlComplete } from './CurlStreamService.js';
 import { ollamaChatComplete } from './OllamaNativeService.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import type { getAIProviderService } from './AIProviderService.js';
+// CLARITY_FLOOR / RUBRIC / BAN_LIST / REWRITE_RULES are shared from ./dialogueCraft.js.
+// They are re-exported for tests via the existing export block near the bottom of this file.
+import { CLARITY_FLOOR, RUBRIC, BAN_LIST, REWRITE_RULES } from './dialogueCraft.js';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -125,33 +128,8 @@ export function selectRoster(
 }
 
 // ── Prompt building blocks ──────────────────────────────────────────────────
-
-const RUBRIC = `評估標準（對話品質四維度）：
-1. 聲音辨識度 (voice distinctiveness)：每個角色的對話是否有可辨識的個人語氣、用詞、節奏，讀者不靠標籤也能分辨說話者。
-2. 潛台詞深度 (subtext depth)：角色是否透過迂迴、迴避、暗示傳達情緒與意圖，而非直接陳述。
-3. 避免直白 (on-the-nose avoidance)：避免角色把感受與動機說破（「我很生氣因為你背叛了我」）。
-4. 權力動態 (power dynamics)：對話是否反映角色之間的地位、控制、讓步與試探。`;
-
-const BAN_LIST = `禁止清單（必須移除或改寫）：
-- 破折號濫用（— 的過度使用）
-- 「他點點頭」「她嘆了口氣」這類陳腐動作標籤
-- 治療式語言（「當你做 X 時我感到 Y」）
-- 「眾所周知」式資訊傾倒（"As you know Bob" 說明）
-- 對話中途反覆呼喚對方名字
-- 角色直接陳述自己的動機`;
-
-/** Overriding constraint: comprehensibility + meaning preservation beat subtext. */
-const CLARITY_FLOOR = `最高原則（凌駕一切）：
-- 改寫後的每一句對話都必須是「讀者一看就懂」的完整、通順、口語化繁體中文。
-- 潛台詞與含蓄是加分項，但絕不可犧牲理解——寧可稍微直白，也不要產生脫離上下文就無法理解的殘缺短句（例如單獨的「不硬打。」這種讓人困惑的片段）。
-- 「只改說法，不改意思」：嚴禁改變任何對話的原意、角色意圖或劇情資訊，只能調整措辭、語氣與節奏。`;
-
-const REWRITE_RULES = `改寫規則：
-- 只改寫「引號內」的對話文字。引號外的敘述、動作描寫、場景文字一律「逐字保留」，不得更動。
-- 不得改變任何對話的原意、角色意圖或所傳達的劇情資訊；只能調整措辭、語氣與節奏。
-- 對話邊界同時支援中文引號（「」『』）與西文引號（"" "" ''）。改寫後維持原本使用的引號樣式。
-- 不得新增或刪除對話段落，不得改變敘事視角。
-- 直接輸出完整段落（敘述 + 改寫後對話），不要附加說明、評語或標記。`;
+// CLARITY_FLOOR / RUBRIC / BAN_LIST / REWRITE_RULES now live in ./dialogueCraft.ts
+// (single source shared with the story-generation system prompt).
 
 /** M-002: Maximum voiceStyle length injected per character (prevents prompt injection bloat). */
 const VOICE_STYLE_MAX_CHARS = 500;

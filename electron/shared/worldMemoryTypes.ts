@@ -53,6 +53,7 @@ export interface StoryEvent {
   horizon: 'short' | 'mid' | 'long';
   // Manual ordering within a horizon bucket (lower = sooner).
   orderInHorizon: number;
+  source: 'author' | 'director';
   paragraphId: string | null;
   createdAt: string;
   updatedAt: string;

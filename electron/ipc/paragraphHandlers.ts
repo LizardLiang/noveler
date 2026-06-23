@@ -74,6 +74,39 @@ export function registerParagraphHandlers(): void {
     },
   );
 
+  // Create an opening paragraph (開場白) — user-authored prose saved directly as
+  // the story's first block, without invoking the AI. Stored as a 'system' type so
+  // it renders as story prose (not a user chat bubble) and the model treats it as
+  // prior story content to continue from. Ensures the main branch exists first so
+  // this works on a brand-new, empty story.
+  ipcMain.handle(
+    IPC_CHANNELS.PARAGRAPH_CREATE_OPENING,
+    (_event, projectId: string, branchId: string, content: string): IpcResult<ParagraphRecord> => {
+      try {
+        const db = getOpenProject(projectId);
+        const projectPath = getProjectStoragePath(projectId);
+        if (!db || !projectPath) {
+          return { success: false, error: { code: 'PROJECT_NOT_OPEN', message: '專案未開啟' } };
+        }
+        const text = (content ?? '').trim();
+        if (!text) {
+          return { success: false, error: { code: 'EMPTY_OPENING', message: '開場白內容不可為空' } };
+        }
+        const effectiveBranchId = branchId || paragraphService.getOrCreateMainBranch(db, projectPath, projectId);
+        const paragraph = paragraphService.createParagraph(db, {
+          projectPath,
+          projectId,
+          branchId: effectiveBranchId,
+          type: 'system',
+          content: text,
+        });
+        return { success: true, data: paragraph };
+      } catch (err) {
+        return { success: false, error: { code: 'PARAGRAPH_CREATE_OPENING_ERROR', message: '建立開場白失敗', details: err } };
+      }
+    },
+  );
+
   // Get world memory items linked to a paragraph
   ipcMain.handle(
     IPC_CHANNELS.PARAGRAPH_GET_LINKED_WORLD_MEMORY,

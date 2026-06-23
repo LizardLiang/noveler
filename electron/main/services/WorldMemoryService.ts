@@ -74,6 +74,7 @@ function rowToEvent(row: Record<string, unknown>): StoryEvent {
     status: row.status === 'planned' ? 'planned' : 'occurred',
     horizon: normalizeHorizon(row.horizon),
     orderInHorizon: Number(row.order_in_horizon ?? 0),
+    source: row.source === 'director' ? 'director' : 'author',
     paragraphId: row.paragraph_id ? String(row.paragraph_id) : null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -310,6 +311,7 @@ export class WorldMemoryService {
       status?: 'occurred' | 'planned';
       horizon?: EventHorizon;
       orderInHorizon?: number;
+      source?: 'author' | 'director';
       paragraphId?: string | null;
     },
   ): StoryEvent {
@@ -317,8 +319,8 @@ export class WorldMemoryService {
     const now = new Date().toISOString();
     db.prepare(
       `INSERT INTO events
-        (id, project_id, branch_id, name, description, story_timestamp, impact, participating_characters, status, horizon, order_in_horizon, paragraph_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, project_id, branch_id, name, description, story_timestamp, impact, participating_characters, status, horizon, order_in_horizon, source, paragraph_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
       projectId,
@@ -331,6 +333,7 @@ export class WorldMemoryService {
       data.status === 'planned' ? 'planned' : 'occurred',
       normalizeHorizon(data.horizon),
       Number(data.orderInHorizon ?? 0),
+      data.source === 'director' ? 'director' : 'author',
       data.paragraphId != null ? String(data.paragraphId) : null,
       now,
       now,
@@ -539,6 +542,26 @@ export class WorldMemoryService {
     return { created, updated, skipped };
   }
 
+  // ---- Author-only planned events (for director directive context) ----
+
+  /**
+   * Returns only author-sourced planned events, in intended writing order
+   * (oldest-created first). Used by DirectorService to build the directive
+   * so AI-planned beats never leak into the world-memory context block.
+   */
+  listAuthorPlannedForContext(
+    db: ProjectDatabase,
+    projectId: string,
+    branchId: string,
+  ): StoryEvent[] {
+    const rows = db.prepare(
+      `SELECT * FROM events
+       WHERE project_id=? AND branch_id=? AND status='planned' AND source='author'
+       ORDER BY created_at ASC`,
+    ).all(projectId, branchId);
+    return rows.map(rowToEvent);
+  }
+
   // ---- World memory summary for context injection ----
 
   buildSummary(
@@ -628,7 +651,10 @@ export class WorldMemoryService {
     }
 
     const occurredEvents = events.filter(e => e.status !== 'planned');
-    const plannedEvents = events.filter(e => e.status === 'planned');
+    // Exclude director-planned beats from the world-memory context block:
+    // speculative AI beats must not read as established canon to the writer model.
+    // Director events feed the director directive only (see DirectorService).
+    const plannedEvents = events.filter(e => e.status === 'planned' && e.source !== 'director');
 
     const recentEvents = occurredEvents.slice(0, 8);
     const olderEvents = occurredEvents.slice(8, 20);
@@ -742,15 +768,21 @@ export class WorldMemoryService {
     projectId: string,
     branchId: string,
     targetParagraphId: string,
+    options?: { inclusive?: boolean },
   ): void {
     const targetRow = db
       .prepare('SELECT position FROM paragraph_meta WHERE id=?')
       .get(targetParagraphId) as { position: number } | undefined;
     if (!targetRow) return;
 
+    // Default: undo changes from paragraphs *after* the target (rollback keeps the
+    // target). `inclusive` also undoes the target's own changes — used by regenerate,
+    // which rewrites the target and must not feed the old version's world facts back
+    // into the next prompt.
+    const comparator = options?.inclusive ? '>=' : '>';
     const detachedParagraphs = db
       .prepare(
-        'SELECT id FROM paragraph_meta WHERE branch_id=? AND position > ? ORDER BY position ASC',
+        `SELECT id FROM paragraph_meta WHERE branch_id=? AND position ${comparator} ? ORDER BY position ASC`,
       )
       .all(branchId, targetRow.position) as { id: string }[];
 

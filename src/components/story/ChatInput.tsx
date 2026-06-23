@@ -5,10 +5,17 @@ interface ChatInputProps {
   onSend: (message: string) => void;
   onCancel: () => void;
   isGenerating: boolean;
+  /** Current AI pipeline phase key (director/context/generating/…); drives the status label. */
+  phase?: string | null;
   disabled?: boolean;
+  /** Per-generation target word count override; undefined = use the project default. */
+  wordCount?: number;
+  onWordCountChange?: (value: number | undefined) => void;
 }
 
-export function ChatInput({ onSend, onCancel, isGenerating, disabled }: ChatInputProps) {
+export function ChatInput({ onSend, onCancel, isGenerating, phase, disabled, wordCount, onWordCountChange }: ChatInputProps) {
+  const phaseLabel =
+    (phase && (zhTW.chat.phases as Record<string, string>)[phase]) || zhTW.chat.generating;
   const [value, setValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -59,6 +66,43 @@ export function ChatInput({ onSend, onCancel, isGenerating, disabled }: ChatInpu
         flexShrink: 0,
       }}
     >
+      {onWordCountChange && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <label
+            htmlFor="gen-word-count"
+            title={zhTW.chat.wordCountTooltip}
+            style={{ fontSize: 12, color: 'var(--color-text-tertiary)', cursor: 'help' }}
+          >
+            {zhTW.chat.wordCountLabel}
+          </label>
+          <input
+            id="gen-word-count"
+            type="number"
+            min={1}
+            step={50}
+            value={wordCount ?? ''}
+            placeholder={zhTW.chat.wordCountPlaceholder}
+            disabled={isGenerating || disabled}
+            onChange={e => {
+              const raw = e.target.value.trim();
+              const n = Number(raw);
+              onWordCountChange(raw === '' || !Number.isFinite(n) || n <= 0 ? undefined : n);
+            }}
+            style={{
+              width: 90,
+              padding: '4px 8px',
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid var(--color-border)',
+              background: 'var(--color-surface)',
+              color: 'var(--color-text-primary)',
+              fontSize: 12,
+              outline: 'none',
+              opacity: disabled ? 0.5 : 1,
+            }}
+          />
+        </div>
+      )}
+
       <div
         style={{
           display: 'flex',
@@ -177,7 +221,7 @@ export function ChatInput({ onSend, onCancel, isGenerating, disabled }: ChatInpu
               animation: 'pulse 1.4s ease-in-out infinite',
             }}
           />
-          {zhTW.chat.generating}
+          {phaseLabel}
         </div>
       )}
 

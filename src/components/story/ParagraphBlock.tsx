@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { memo, useState, useCallback } from 'react';
 import { StreamingTextRenderer } from './StreamingTextRenderer';
 import { zhTW } from '@/i18n/zh-TW';
 import type { ParagraphMeta } from '@/types/models';
@@ -14,7 +14,8 @@ const STATUS_LABELS: Record<ParagraphMeta['status'], string> = {
 const TYPE_LABELS: Record<ParagraphMeta['type'], string> = {
   user: zhTW.paragraph.user,
   ai: zhTW.paragraph.ai,
-  system: zhTW.paragraph.system,
+  // 'system' paragraphs are user-authored openings (開場白); label them as such.
+  system: zhTW.paragraph.opening,
 };
 
 interface ParagraphBlockProps {
@@ -33,7 +34,7 @@ interface ParagraphBlockProps {
   onSwitchVersion?: (id: string, version: number) => void;
 }
 
-export function ParagraphBlock({
+export const ParagraphBlock = memo(function ParagraphBlock({
   paragraph,
   content,
   streamingContent,
@@ -433,7 +434,7 @@ export function ParagraphBlock({
       `}</style>
     </div>
   );
-}
+});
 
 interface ToolbarButtonProps {
   title: string;

@@ -208,6 +208,7 @@ CREATE TABLE IF NOT EXISTS events (
     status          TEXT NOT NULL DEFAULT 'occurred',
     horizon         TEXT NOT NULL DEFAULT 'mid',
     order_in_horizon INTEGER NOT NULL DEFAULT 0,
+    source          TEXT NOT NULL DEFAULT 'author',
     paragraph_id    TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
@@ -410,6 +411,17 @@ function migrateProjectDatabase(db: ProjectDatabase): void {
     ).all();
     if (horizonCols.length === 0) {
       db.exec("ALTER TABLE events ADD COLUMN horizon TEXT NOT NULL DEFAULT 'mid'");
+    }
+  } catch {
+    // Table may not exist yet (first run) — schema DDL creates it with the column
+  }
+
+  try {
+    const sourceCols = db.prepare(
+      "SELECT name FROM pragma_table_info('events') WHERE name='source'",
+    ).all();
+    if (sourceCols.length === 0) {
+      db.exec("ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'author'");
     }
   } catch {
     // Table may not exist yet (first run) — schema DDL creates it with the column

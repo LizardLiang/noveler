@@ -33,3 +33,8 @@ yarn.lock
 /playwright/.cache/
 
 test/screenshots
+
+# Claude Code local tooling state & stray log captures
+.claude/
+demo-*.txt
+hades-*.txt
