@@ -44,6 +44,15 @@ vi.mock('../WorldMemoryService.js', () => ({
   }),
 }));
 
+// Mock the world-memory tool surface used by the agentic gather loop.
+// Default directory is empty so non-gather tests treat gather as a no-op.
+const mockBuildWorldDirectory = vi.fn().mockReturnValue('');
+const mockExecuteWorldMemoryQuery = vi.fn().mockReturnValue('');
+vi.mock('../WorldMemoryTools.js', () => ({
+  buildWorldDirectory: (...a: unknown[]) => mockBuildWorldDirectory(...a),
+  executeWorldMemoryQuery: (...a: unknown[]) => mockExecuteWorldMemoryQuery(...a),
+}));
+
 // ── Import service AFTER mocks ───────────────────────────────────────────────
 import { DirectorService } from '../DirectorService.js';
 import type { ActiveProvider, AiClient } from '../DirectorService.js';
@@ -808,5 +817,109 @@ describe('DirectorService', () => {
     expect(capturedUser).toContain('the latest paragraph text');
     // anchor-one / constrain-all binding rule present in the system prompt
     expect(capturedSystem).toContain('至少要有一個選項直接推進');
+  });
+
+  // ── TC-21: agentic gather — issues a query, stops on READY, threads facts ─────
+  it('TC-21: gather loop runs a query then stops on READY and feeds reconcile', async () => {
+    mockBuildWorldDirectory.mockReturnValue('可查詢角色：\n- 女主（未知，活躍）');
+    mockExecuteWorldMemoryQuery.mockReturnValue('女主 —[配偶]— 男主：已離婚');
+    mockListEvents.mockReturnValue([]);
+
+    const create = vi.fn()
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'QUERY {"character_names":["女主"],"include_relationships":true}' } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'READY' } }] });
+    const aiClient = { chat: { completions: { create } } } as unknown as AiClient;
+
+    const reconcileRoadmap = vi.spyOn(service, 'reconcileRoadmap').mockResolvedValue(true);
+    vi.spyOn(service, 'buildDirective').mockResolvedValue('directive');
+    const onUsage = vi.fn();
+
+    await service.planAndDirect({
+      ...baseArgs,
+      providerConfig: makeProvider(),
+      model: 'gpt-4',
+      db: makeDb([{ n: 1 }]) as unknown as import('../database.js').ProjectDatabase,
+      recentStory: 'some recent story',
+      generationToken: 1,
+      isCurrentToken: () => true,
+      plan: true,
+      gatherRounds: 4,
+      aiClient,
+      onUsage,
+    });
+
+    // One QUERY round + one READY round = 2 LLM calls; one query executed.
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(mockExecuteWorldMemoryQuery).toHaveBeenCalledTimes(1);
+    // Usage attributed under the new step tag.
+    expect(onUsage).toHaveBeenCalledWith('director-research', expect.anything());
+    // Gathered facts are threaded into reconcile as the trailing gatheredContext arg.
+    const lastArg = reconcileRoadmap.mock.calls[0].at(-1);
+    expect(String(lastArg)).toContain('已離婚');
+  });
+
+  // ── TC-22: agentic gather — honors the maxRounds cap ─────────────────────────
+  it('TC-22: gather loop stops at gatherRounds even if the model never says READY', async () => {
+    mockBuildWorldDirectory.mockReturnValue('可查詢角色：\n- 女主（未知，活躍）');
+    mockExecuteWorldMemoryQuery.mockReturnValue('某事實');
+    mockListEvents.mockReturnValue([]);
+
+    // Always returns a *distinct* query (so dedup never short-circuits the loop).
+    let i = 0;
+    const create = vi.fn().mockImplementation(() =>
+      Promise.resolve({ choices: [{ message: { content: `QUERY {"character_names":["C${i++}"]}` } }] }),
+    );
+    const aiClient = { chat: { completions: { create } } } as unknown as AiClient;
+
+    vi.spyOn(service, 'reconcileRoadmap').mockResolvedValue(true);
+    vi.spyOn(service, 'buildDirective').mockResolvedValue('directive');
+
+    await service.planAndDirect({
+      ...baseArgs,
+      providerConfig: makeProvider(),
+      model: 'gpt-4',
+      db: makeDb([{ n: 1 }]) as unknown as import('../database.js').ProjectDatabase,
+      recentStory: 'some recent story',
+      generationToken: 1,
+      isCurrentToken: () => true,
+      plan: true,
+      gatherRounds: 2,
+      aiClient,
+    });
+
+    // Capped at 2 rounds.
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(mockExecuteWorldMemoryQuery).toHaveBeenCalledTimes(2);
+  });
+
+  // ── TC-23: agentic gather — skips entirely when world memory is empty ─────────
+  it('TC-23: gather loop is skipped (no LLM call) when the directory is empty', async () => {
+    mockBuildWorldDirectory.mockReturnValue(''); // brand-new project, nothing to research
+    mockListEvents.mockReturnValue([]);
+
+    const create = vi.fn();
+    const aiClient = { chat: { completions: { create } } } as unknown as AiClient;
+
+    const reconcileRoadmap = vi.spyOn(service, 'reconcileRoadmap').mockResolvedValue(true);
+    vi.spyOn(service, 'buildDirective').mockResolvedValue('directive');
+
+    await service.planAndDirect({
+      ...baseArgs,
+      providerConfig: makeProvider(),
+      model: 'gpt-4',
+      db: makeDb([{ n: 1 }]) as unknown as import('../database.js').ProjectDatabase,
+      recentStory: 'some recent story',
+      generationToken: 1,
+      isCurrentToken: () => true,
+      plan: true,
+      gatherRounds: 4,
+      aiClient,
+    });
+
+    expect(create).not.toHaveBeenCalled();
+    expect(mockExecuteWorldMemoryQuery).not.toHaveBeenCalled();
+    // Reconcile still runs; gatheredContext is the empty string.
+    expect(reconcileRoadmap).toHaveBeenCalledOnce();
+    expect(String(reconcileRoadmap.mock.calls[0].at(-1))).toBe('');
   });
 });

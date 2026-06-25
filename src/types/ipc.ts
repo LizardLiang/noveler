@@ -243,9 +243,10 @@ export interface RecoveryCheckResult {
 
 // ===== Token Usage Tracking — mirror of electron/shared/types.ts (§3.2) =====
 
-/** Pipeline steps that make LLM calls (FR-004). 9 values. */
+/** Pipeline steps that make LLM calls (FR-004). 10 values. */
 export type PipelineStep =
   | 'director-directive'
+  | 'director-research'
   | 'world-memory-query'
   | 'story-generation'
   | 'narration-edit'

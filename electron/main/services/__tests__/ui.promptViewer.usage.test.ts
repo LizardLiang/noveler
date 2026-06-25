@@ -33,6 +33,7 @@ function fmt(n: number | null | undefined): string {
 function stepLabel(step: PipelineStep): string {
   switch (step) {
     case 'director-directive': return t.stepDirectorDirective;
+    case 'director-research': return t.stepDirectorResearch;
     case 'world-memory-query': return t.stepWorldMemoryQuery;
     case 'story-generation': return t.stepStoryGeneration;
     case 'narration-edit': return t.stepNarrationEdit;
@@ -111,9 +112,10 @@ describe('TC-E01: PromptViewerModal usage table — per-step data produces corre
     expect(r.callCount).toBe(2);
   });
 
-  it('all 9 step labels resolve to non-empty zh-TW strings', () => {
+  it('all 10 step labels resolve to non-empty zh-TW strings', () => {
     const allSteps: PipelineStep[] = [
       'director-directive',
+      'director-research',
       'world-memory-query',
       'story-generation',
       'narration-edit',

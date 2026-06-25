@@ -20,11 +20,12 @@ import { describe, it, expect } from 'vitest';
 // We use a relative path from the test file location
 import { zhTW } from '../../../../src/i18n/zh-TW.js';
 
-describe('TC-U29: zh-TW i18n — all 9 step labels present in promptViewer namespace', () => {
-  it('has all 9 PipelineStep labels as non-empty strings', () => {
+describe('TC-U29: zh-TW i18n — all 10 step labels present in promptViewer namespace', () => {
+  it('has all 10 PipelineStep labels as non-empty strings', () => {
     const pv = zhTW.promptViewer;
     const stepKeys = [
       'stepDirectorDirective',
+      'stepDirectorResearch',
       'stepWorldMemoryQuery',
       'stepStoryGeneration',
       'stepNarrationEdit',
@@ -104,6 +105,7 @@ describe('TC-U29: zh-TW i18n — tokenUsage dashboard keys present', () => {
     const pv = zhTW.promptViewer;
     const steps = [
       pv.stepDirectorDirective,
+      pv.stepDirectorResearch,
       pv.stepWorldMemoryQuery,
       pv.stepStoryGeneration,
       pv.stepNarrationEdit,

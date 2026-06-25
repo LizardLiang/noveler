@@ -14,6 +14,7 @@ export function stepLabel(step: PipelineStep): string {
   const t = zhTW.promptViewer;
   switch (step) {
     case 'director-directive':   return t.stepDirectorDirective;
+    case 'director-research':    return t.stepDirectorResearch;
     case 'world-memory-query':   return t.stepWorldMemoryQuery;
     case 'story-generation':     return t.stepStoryGeneration;
     case 'narration-edit':       return t.stepNarrationEdit;

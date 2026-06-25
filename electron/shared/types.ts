@@ -63,9 +63,10 @@ export interface PromptLog {
 // Token Usage Tracking types (§3.2)
 // ============================================================
 
-/** Pipeline steps that make LLM calls (FR-004). 9 values. */
+/** Pipeline steps that make LLM calls (FR-004). 10 values. */
 export type PipelineStep =
   | 'director-directive'
+  | 'director-research'   // Director's agentic world-memory gather loop (1..N calls)
   | 'world-memory-query'
   | 'story-generation'
   | 'narration-edit'      // runNarrationPass → refineNarration (1–2 calls/paragraph)

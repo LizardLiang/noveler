@@ -295,6 +295,7 @@ export const zhTW = {
     usageRollup: '匯總',
     usageCallCount: '呼叫次數',
     stepDirectorDirective: '導演指令',
+    stepDirectorResearch: '導演調研',
     stepWorldMemoryQuery: '世界記憶查詢',
     stepStoryGeneration: '故事生成',
     stepNarrationEdit: '敘述潤飾',
@@ -407,6 +408,9 @@ export const zhTW = {
     replanHint: '依目前的創作走向，立即重排 AI 規劃事件',
     replanNeedsProvider: '尚未設定 AI 供應商，無法重新規劃',
     replanFailed: '導演重新規劃失敗，請稍後再試',
+    gatherLabel: '導演調研深度',
+    gatherHint: '導演在規劃前可主動查詢世界記憶，確認角色與關係現況，避免重複規劃早已發生的劇情。數字越大越仔細，但每段生成會多花幾次 AI 呼叫。範圍 1–6，預設 4。',
+    gatherRoundsUnit: '回合',
   },
   writingStyle: {
     title: '寫作風格',

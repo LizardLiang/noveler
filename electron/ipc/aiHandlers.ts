@@ -118,6 +118,27 @@ function getWordCountTarget(projectId: string): number | undefined {
 }
 
 /**
+ * Read the Director's agentic gather-loop round cap (director_gather_rounds) from
+ * project_settings. Controls how many world-memory research rounds the Director may
+ * run before planning/steering. Default 4, clamped 1..6.
+ */
+function getDirectorGatherRounds(projectId: string): number {
+  try {
+    const projectDb = getOpenProject(projectId);
+    if (!projectDb) return 4;
+    const row = projectDb.prepare(
+      "SELECT value FROM project_settings WHERE key='director_gather_rounds'",
+    ).get() as { value: string } | undefined;
+    if (!row) return 4;
+    const n = Number(JSON.parse(String(row.value)));
+    if (!Number.isFinite(n)) return 4;
+    return Math.max(1, Math.min(6, Math.floor(n)));
+  } catch {
+    return 4;
+  }
+}
+
+/**
  * Read the project's world rules (世界規則) from project_settings.
  * Injected into the system prompt as the highest-priority, must-not-break world setting.
  */
@@ -1167,6 +1188,7 @@ export function registerAIHandlers(): void {
           directorBrief: getDirectorBrief(req.projectId, effectiveBranchId),
           directorNote: req.directorNote ?? '',
           worldRules: getWorldRules(req.projectId),
+          gatherRounds: getDirectorGatherRounds(req.projectId),
           aiClient: aiService.getClient(),
           onUsage: (step, rec) => genCollector.add(step, rec),
         });
@@ -1697,6 +1719,7 @@ export function registerAIHandlers(): void {
           force: true,
           directorBrief: getDirectorBrief(req.projectId, effectiveBranchId),
           worldRules: getWorldRules(req.projectId),
+          gatherRounds: getDirectorGatherRounds(req.projectId),
           aiClient: aiService.getClient(),
           onUsage: (step, rec) => replanCollector.add(step, rec),
         });
@@ -2590,6 +2613,7 @@ export function registerAIHandlers(): void {
           directorBrief,
           providerConfig,
           model,
+          gatherRounds: getDirectorGatherRounds(req.projectId),
           aiClient: aiService.getClient(),
           onUsage: (step: import('../shared/types.js').PipelineStep, rec: Omit<import('../shared/types.js').StepUsageRecord, 'step'>) => suggestCollector.add(step, rec),
         };

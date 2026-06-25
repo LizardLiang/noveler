@@ -24,6 +24,8 @@ import type { TokenUsage } from './AIProviderService.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import type { ProjectDatabase } from './database.js';
 import { getWorldMemoryService } from './WorldMemoryService.js';
+import { buildWorldDirectory, executeWorldMemoryQuery } from './WorldMemoryTools.js';
+import type { QueryWorldMemoryArgs } from './WorldMemoryTools.js';
 import type { StoryEvent, EventHorizon } from '../../shared/worldMemoryTypes.js';
 import type { PipelineStep, StepUsageRecord } from '../../shared/types.js';
 
@@ -70,6 +72,8 @@ export interface PlanAndDirectArgs {
   /** One-off director steer for this single generation. Not persisted; feeds the
    *  directive only (never the roadmap reconcile). */
   directorNote?: string;
+  /** Max rounds for the agentic world-memory gather loop (clamped 1..6). Default 4. */
+  gatherRounds?: number;
   /** World rules string (read from project settings by the caller). */
   worldRules?: string;
   /** OpenAI client (from AIProviderService) for API-key path. */
@@ -104,6 +108,38 @@ export interface AiClient {
 
 const PLAN_TRIGGER_THRESHOLD = 2; // fire when planned-ahead count < this value
 const PLAN_HORIZON = 3;           // keep + new ≤ this many AI beats total
+
+// ── Agentic gather loop ───────────────────────────────────────────────────────
+const GATHER_DEFAULT_ROUNDS = 4;       // default when caller passes no gatherRounds
+const GATHER_MAX_QUERIES_PER_ROUND = 6; // bound DB work per round
+const GATHER_MAX_TOKENS = 1500;        // reasoning-model budget (see project memory)
+
+/** Parse `QUERY {json}` lines into QueryWorldMemoryArgs. `READY` / no match → []. */
+function parseGatherQueries(raw: string): QueryWorldMemoryArgs[] {
+  if (!raw) return [];
+  const out: QueryWorldMemoryArgs[] = [];
+  // Each query: the token QUERY followed by a flat JSON object (no nested braces).
+  const re = /QUERY\s*(\{[^{}]*\})/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) !== null) {
+    try {
+      const p = JSON.parse(m[1]) as Record<string, unknown>;
+      const names = Array.isArray(p.character_names)
+        ? (p.character_names as unknown[]).filter((x): x is string => typeof x === 'string')
+        : [];
+      const q: QueryWorldMemoryArgs = { character_names: names };
+      if (typeof p.include_relationships === 'boolean') q.include_relationships = p.include_relationships;
+      if (typeof p.include_relationship_history === 'boolean') q.include_relationship_history = p.include_relationship_history;
+      if (typeof p.min_importance === 'number') q.min_importance = p.min_importance;
+      if (p.trend === 'warming' || p.trend === 'cooling' || p.trend === 'stable') q.trend = p.trend;
+      if (typeof p.event_count === 'number') q.event_count = p.event_count;
+      out.push(q);
+    } catch {
+      // skip malformed query
+    }
+  }
+  return out;
+}
 
 // ── Dual-provider LLM call ───────────────────────────────────────────────────
 
@@ -235,6 +271,115 @@ export class DirectorService {
   }
 
   /**
+   * Agentic, provider-agnostic "research" pre-step. Hands the Director a directory
+   * of what's queryable and lets it pull exactly the world-memory facts it judges
+   * relevant (character state, relationships, occurred/planned events) before it
+   * plans or steers — so it knows, e.g., that a divorce already happened and plans
+   * its aftermath instead of repeating it.
+   *
+   * Text-protocol loop (NOT native tool-calling) so it works on every transport,
+   * including OAuth/curl: each round the model replies with `QUERY {json}` lines
+   * (json = QueryWorldMemoryArgs) or `READY`. We run executeWorldMemoryQuery for
+   * each, feed results back, and loop until READY / no new query / maxRounds.
+   *
+   * Read-only (no DB writes) → no token guard needed. Never throws; returns the
+   * facts gathered so far ('' when world memory is empty or on total failure).
+   */
+  private async gatherWorldContext(args: {
+    db: ProjectDatabase;
+    projectId: string;
+    branchId: string;
+    recentStory: string;
+    roadmapText: string;
+    worldRules: string;
+    directorBrief: string;
+    providerConfig: ActiveProvider;
+    model: string;
+    maxRounds: number;
+    aiClient?: AiClient | null;
+    onUsage?: (step: PipelineStep, rec: Omit<StepUsageRecord, 'step'>) => void;
+  }): Promise<string> {
+    const {
+      db, projectId, branchId, recentStory, roadmapText,
+      worldRules, directorBrief, providerConfig, model, aiClient, onUsage,
+    } = args;
+    const maxRounds = Math.max(1, Math.min(6, Math.floor(args.maxRounds) || GATHER_DEFAULT_ROUNDS));
+
+    try {
+      const directory = buildWorldDirectory(this.worldMemoryService, db, projectId, branchId);
+      if (!directory.trim()) return ''; // nothing to research (e.g. brand-new project)
+
+      const system = `你是故事「導演」的調研助手。在導演規劃或指導下一段之前，你可以查詢世界記憶，確認目前的角色現況、人物關係與已發生／規劃中的事件，避免導演重複規劃「其實早已發生」的情節，或寫出與設定矛盾的內容。${worldRules ? `\n\n本作世界規則：\n${worldRules}` : ''}${directorBrief ? `\n\n作者創作走向：\n${directorBrief}` : ''}
+
+如何決定要查什麼（請主動判斷）：
+- 若接下來的劇情牽涉某個角色或某段關係，先查那個角色與關係的現況。
+- 特別要確認：roadmap 裡看起來「即將發生」的事，是不是其實早已發生過（例如某段關係狀態已是「離婚／決裂／結盟」）。若已發生，導演應接續其後果，而不是重來。
+- 不確定時就查；查到足夠資訊後就停止，不要為查而查。
+
+可查詢的世界記憶目錄：
+${directory}
+
+回覆協定（嚴格遵守，不要輸出協定以外的文字）：
+- 需要查詢時，每行輸出一個查詢，格式：QUERY {"character_names":["角色名"],"include_relationships":true,"include_relationship_history":false,"event_count":5}
+  character_names 必填（可為空陣列 []，此時只看事件）；其餘欄位可省略。一輪最多 ${GATHER_MAX_QUERIES_PER_ROUND} 個查詢。
+- 當資訊已足夠、不需再查時，只回覆一行：READY`;
+
+      const conversation: ChatCompletionMessageParam[] = [
+        { role: 'system', content: system },
+        {
+          role: 'user',
+          content: `【故事近況】\n${recentStory || '（故事尚未開始）'}\n\n【目前 roadmap（規劃中／尚未發生）】\n${roadmapText}\n\n請開始調研：輸出 QUERY 行，或在資訊已足夠時回覆 READY。`,
+        },
+      ];
+
+      const gathered: string[] = [];
+      const seen = new Set<string>();
+
+      for (let round = 0; round < maxRounds; round++) {
+        const start = performance.now();
+        const { text, usage } = await callLLM(
+          conversation, providerConfig, model, { maxTokens: GATHER_MAX_TOKENS, temperature: 0.2 }, aiClient,
+        );
+        onUsage?.('director-research', {
+          model,
+          promptTokens: usage?.promptTokens ?? null,
+          completionTokens: usage?.completionTokens ?? null,
+          totalTokens: usage?.totalTokens ?? null,
+          reasoningTokens: usage?.reasoningTokens ?? null,
+          latencyMs: performance.now() - start,
+        });
+
+        const queries = parseGatherQueries(text);
+        if (queries.length === 0) break; // READY or unparseable → done
+
+        const results: string[] = [];
+        for (const q of queries.slice(0, GATHER_MAX_QUERIES_PER_ROUND)) {
+          const key = JSON.stringify(q);
+          if (seen.has(key)) continue; // don't re-run an identical query
+          seen.add(key);
+          const res = executeWorldMemoryQuery(this.worldMemoryService, db, projectId, branchId, q);
+          results.push(`▼ ${key}\n${res}`);
+        }
+        if (results.length === 0) break; // only duplicate queries → done
+
+        const block = results.join('\n\n');
+        gathered.push(block);
+
+        // Feed results back for the next round.
+        conversation.push({ role: 'assistant', content: text });
+        conversation.push({
+          role: 'user',
+          content: `查詢結果：\n${block}\n\n若還需要更多資訊請再輸出 QUERY 行，否則回覆 READY。`,
+        });
+      }
+
+      return gathered.join('\n\n');
+    } catch {
+      return '';
+    }
+  }
+
+  /**
    * Reconcile the AI roadmap: call the model once with current director-planned
    * events + story context, parse the keep/discard/new response, then:
    *   - Delete discarded source='director' rows
@@ -257,6 +402,8 @@ export class DirectorService {
     directorBrief: string,
     aiClient?: AiClient | null,
     onUsage?: (step: PipelineStep, rec: Omit<StepUsageRecord, 'step'>) => void,
+    /** Facts the Director pulled from world memory in the gather pre-step. */
+    gatheredContext: string = '',
   ): Promise<boolean> {
     // Collect current director-planned beats (with stable indices)
     const allEvents = this.worldMemoryService.listEvents(db, projectId, branchId);
@@ -288,6 +435,10 @@ export class DirectorService {
       ? occurredEvents.map(e => `- ${e.name}：${e.description}`).join('\n')
       : '（尚無已記錄的關鍵事件）';
 
+    const gatheredBlock = gatheredContext.trim()
+      ? `\n\n【世界記憶查詢結果（導演主動查得的現況，請據此判斷）】\n${gatheredContext.trim()}`
+      : '';
+
     const messages: ChatCompletionMessageParam[] = [
       {
         role: 'system',
@@ -302,8 +453,9 @@ export class DirectorService {
 
 維護時程（retier）：隨著故事推進，若某個保留事件已逼近、該開始實際演出，就把它從中期調近期、或遠期調中期。但這必須符合故事當下的節奏——只有當故事真的走到那一步時才前移，絕不可為了推進而強行提前。沒有變動的事件不要列入 retier。
 
-嚴格限制：
-- 作者規劃事件為唯讀，絕對不可出現在 discard、retier 或 new 的 name 中。
+規劃原則：
+- 規劃前先依「世界記憶查詢結果」確認現況。若某個方向其實早已發生過（例如某段關係狀態已是離婚／決裂／結盟），就把它當成已完成，改為規劃它之後的發展或後果，而不是讓它重演；new 只放尚未發生的後續情節。
+- 作者規劃事件為唯讀，請勿出現在 discard、retier 或 new 的 name 中。
 - discard 與 retier 的 index 只填入 AI 規劃事件的索引數字（對應上方 [索引] 格式）。
 - new 事件須具體、可推進，且不直接劇透故事結局；每個 new 事件須標明 horizon（"short"／"mid"／"long"），通常最該銜接的下一個事件設為 short，較遠的設為 mid 或 long。
 - 每個 new 事件可選填一個「technique」運鏡或寫作手法（例如：平行剪輯、蒙太奇、空鏡、特寫推近、藏反打、伏筆鋪陳、爽點打臉），用來指示這一段該如何呈現；若無合適手法則填空字串。
@@ -319,7 +471,7 @@ export class DirectorService {
       },
       {
         role: 'user',
-        content: `【故事近況】\n${recentStory || '（故事尚未開始）'}\n\n【已發生事件（最近 5 個）】\n${occurredText}\n\n【作者規劃事件（唯讀，不可修改）】\n${authorBeatsText}\n\n【目前 AI 規劃事件（附索引）】\n${directorBeatsText}\n\n請輸出 JSON。`,
+        content: `【故事近況】\n${recentStory || '（故事尚未開始）'}\n\n【最近已發生事件（最近 5 個，含細節）】\n${occurredText}${gatheredBlock}\n\n【作者規劃事件（唯讀，不可修改）】\n${authorBeatsText}\n\n【目前 AI 規劃事件（附索引）】\n${directorBeatsText}\n\n請輸出 JSON。`,
       },
     ];
 
@@ -456,6 +608,8 @@ export class DirectorService {
     // empty roadmap, and the note takes top priority for this paragraph only.
     directorNote: string = '',
     onUsage?: (step: PipelineStep, rec: Omit<StepUsageRecord, 'step'>) => void,
+    /** Facts the Director pulled from world memory in the gather pre-step. */
+    gatheredContext: string = '',
   ): Promise<string> {
     const allEvents = this.worldMemoryService.listEvents(db, projectId, branchId);
     const plannedAll = allEvents.filter(e => e.status === 'planned');
@@ -483,6 +637,10 @@ export class DirectorService {
       ? occurred.map(e => `- ${e.name}：${e.description}`).join('\n')
       : '（尚無已記錄的關鍵事件）';
 
+    const gatheredBlock = gatheredContext.trim()
+      ? `\n\n【世界記憶查詢結果（導演主動查得的現況，請據此判斷）】\n${gatheredContext.trim()}`
+      : '';
+
     const messages: ChatCompletionMessageParam[] = [
       {
         role: 'system',
@@ -495,11 +653,13 @@ export class DirectorService {
 3. 下一段該寫什麼以朝該目標推進一步——但不可直接跳到事件結果，也不可劇透。
 4. 若目標事件附有「建議手法」，在指示末尾加一句「本段建議手法：<手法>」，並簡述如何在保持劇情連貫的前提下運用該手法。
 
-重要：你的指示只能讓故事「前進一步」，且必須從目前故事的當下場景、地點與正在進行的動作接續。若目標事件發生在不同場景或時間，指示須描述「如何過渡」過去（移動、離場、時間流逝），絕不可要求或暗示直接跳到目標事件所在的場景。`,
+重要：你的指示只能讓故事「前進一步」，且必須從目前故事的當下場景、地點與正在進行的動作接續。若目標事件發生在不同場景或時間，指示須描述「如何過渡」過去（移動、離場、時間流逝），絕不可要求或暗示直接跳到目標事件所在的場景。
+
+依現況推進：請先看「世界記憶查詢結果」確認現況。若某個規劃方向其實早已發生過（例如某段關係狀態已是離婚／決裂／結盟），代表它已完成——請改為接續它的「後果」往下推進，而不是讓故事重做、重簽、重新經歷一次。`,
       },
       {
         role: 'user',
-        content: `【故事近況】\n${recentStory || '（故事尚未開始）'}\n\n【已發生事件】\n${occurredText}\n\n【劇情規劃（尚未發生，需朝此推進）】\n${roadmapText}\n\n請給出導演指示。`,
+        content: `【故事近況】\n${recentStory || '（故事尚未開始）'}\n\n【已發生事件（最近，含細節）】\n${occurredText}${gatheredBlock}\n\n【劇情規劃（尚未發生，需朝此推進）】\n${roadmapText}\n\n請給出導演指示。`,
       },
     ];
 
@@ -538,6 +698,7 @@ export class DirectorService {
     providerConfig: ActiveProvider;
     model: string;
     aiClient?: AiClient | null;
+    gatherRounds?: number;
     onUsage?: (step: PipelineStep, rec: Omit<StepUsageRecord, 'step'>) => void;
   }): Promise<string> {
     try {
@@ -554,6 +715,17 @@ export class DirectorService {
       );
       const roadmapText = [nearTermDirective, longGoals].filter(Boolean).join('\n\n')
         || '（目前沒有預先規劃的事件）';
+
+      // Agentic gather: let the Director pull current world state before proposing,
+      // so options don't contradict canon or re-offer something already done.
+      const gatheredContext = await this.gatherWorldContext({
+        db, projectId, branchId, recentStory, roadmapText,
+        worldRules, directorBrief, providerConfig, model,
+        maxRounds: args.gatherRounds ?? GATHER_DEFAULT_ROUNDS, aiClient, onUsage,
+      });
+      const gatheredBlock = gatheredContext.trim()
+        ? `\n\n【世界記憶查詢結果（導演主動查得的現況，請據此判斷）】\n${gatheredContext.trim()}`
+        : '';
 
       const messages: ChatCompletionMessageParam[] = [
         {
@@ -573,7 +745,7 @@ export class DirectorService {
         },
         {
           role: 'user',
-          content: `【故事近況】\n${recentStory || '（故事剛開始）'}\n\n【最新段落（最重要，三個選項都要直接接續這一段）】\n${latestParagraph || '（無）'}\n\n【劇情規劃（尚未發生，需據此安排走向）】\n${roadmapText}\n\n請輸出 3 個故事走向選項。`,
+          content: `【故事近況】\n${recentStory || '（故事剛開始）'}\n\n【最新段落（最重要，三個選項都要直接接續這一段）】\n${latestParagraph || '（無）'}${gatheredBlock}\n\n【劇情規劃（尚未發生，需據此安排走向）】\n${roadmapText}\n\n請輸出 3 個故事走向選項。`,
         },
       ];
 
@@ -616,9 +788,28 @@ export class DirectorService {
         directorBrief = '',
         directorNote = '',
         worldRules = '',
+        gatherRounds = GATHER_DEFAULT_ROUNDS,
         aiClient,
         onUsage,
       } = args;
+
+      // Agentic gather pre-step: let the Director pull the world-memory facts it
+      // judges relevant before planning/steering. Runs once and feeds BOTH the
+      // reconcile and the directive (shared to avoid duplicate research calls).
+      // Skipped on empty story (nothing to research yet).
+      let gatheredContext = '';
+      if (recentStory.trim()) {
+        const planned = (this.worldMemoryService.listEvents(db, projectId, branchId) ?? [])
+          .filter(e => e.status === 'planned');
+        const roadmapText = planned.length > 0
+          ? [...planned].reverse().map(e => `- ${e.name}：${e.description}`).join('\n')
+          : '（目前沒有預先規劃的事件）';
+        gatheredContext = await this.gatherWorldContext({
+          db, projectId, branchId, recentStory, roadmapText,
+          worldRules, directorBrief, providerConfig, model,
+          maxRounds: gatherRounds, aiClient, onUsage,
+        });
+      }
 
       // Empty-story no-op: planner skips when there is no story text yet (v1 spec).
       if (plan && recentStory.trim()) {
@@ -628,14 +819,14 @@ export class DirectorService {
           await this.reconcileRoadmap(
             db, projectId, branchId, recentStory,
             generationToken, isCurrentToken,
-            providerConfig, model, worldRules, directorBrief, aiClient, onUsage,
+            providerConfig, model, worldRules, directorBrief, aiClient, onUsage, gatheredContext,
           );
         }
       }
 
       return await this.buildDirective(
         db, projectId, branchId, recentStory,
-        worldRules, directorBrief, providerConfig, model, aiClient, directorNote, onUsage,
+        worldRules, directorBrief, providerConfig, model, aiClient, directorNote, onUsage, gatheredContext,
       );
     } catch {
       return '';

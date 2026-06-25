@@ -15,6 +15,7 @@ interface DirectorPanelProps {
 export function DirectorPanel({ projectId, branchId, disabled }: DirectorPanelProps) {
   const settingKey = `director_brief:${branchId}`;
   const [brief, setBrief] = useState('');
+  const [gatherRounds, setGatherRounds] = useState(4);
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
   const [replanning, setReplanning] = useState(false);
@@ -31,6 +32,21 @@ export function DirectorPanel({ projectId, branchId, disabled }: DirectorPanelPr
       setLoading(false);
     });
   }, [projectId, settingKey]);
+
+  // Project-level (not per-branch) gather-loop depth.
+  useEffect(() => {
+    projectSettingsApi.get(projectId, 'director_gather_rounds').then(result => {
+      if (result.success && typeof result.data === 'number') {
+        setGatherRounds(Math.max(1, Math.min(6, Math.floor(result.data))));
+      }
+    });
+  }, [projectId]);
+
+  const handleGatherRoundsChange = useCallback(async (raw: number) => {
+    const next = Math.max(1, Math.min(6, Math.floor(raw) || 4));
+    setGatherRounds(next);
+    await projectSettingsApi.set(projectId, 'director_gather_rounds', next);
+  }, [projectId]);
 
   const handleSave = useCallback(async () => {
     await projectSettingsApi.set(projectId, settingKey, brief);
@@ -101,6 +117,50 @@ export function DirectorPanel({ projectId, branchId, disabled }: DirectorPanelPr
           fontFamily: 'inherit',
         }}
       />
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          paddingTop: 8,
+          borderTop: '1px solid var(--color-border)',
+        }}
+      >
+        <label
+          htmlFor="director-gather-rounds"
+          style={{ fontSize: 14, fontWeight: 500, color: 'var(--color-text-primary)' }}
+        >
+          {zhTW.directorPanel.gatherLabel}
+        </label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+          <input
+            id="director-gather-rounds"
+            type="number"
+            min={1}
+            max={6}
+            value={gatherRounds}
+            onChange={e => handleGatherRoundsChange(Number(e.target.value))}
+            style={{
+              width: 56,
+              padding: '6px 8px',
+              borderRadius: 'var(--radius-md)',
+              border: '1px solid var(--color-border)',
+              background: 'var(--color-bg-secondary)',
+              color: 'var(--color-text-primary)',
+              fontSize: 13,
+              textAlign: 'center',
+            }}
+          />
+          <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
+            {zhTW.directorPanel.gatherRoundsUnit}
+          </span>
+        </div>
+      </div>
+      <p style={{ margin: 0, fontSize: 12, color: 'var(--color-text-tertiary)', lineHeight: 1.5 }}>
+        {zhTW.directorPanel.gatherHint}
+      </p>
+
       {replanError && (
         <p style={{ margin: 0, fontSize: 12, color: 'var(--color-error, #e5484d)' }}>
           {replanError}
