@@ -26,6 +26,19 @@ export const WORLD_MEMORY_TOOLS: ChatCompletionTool[] = [
             type: 'boolean',
             description: '是否包含所查詢角色的關係資料',
           },
+          include_relationship_history: {
+            type: 'boolean',
+            description: '是否附上每段關係的變化歷程（時間軸：好感增減與關鍵轉折），預設否',
+          },
+          min_importance: {
+            type: 'number',
+            description: '只回傳重要度 ≥ 此值的關係（1-5）。用來聚焦最關鍵的人物關係',
+          },
+          trend: {
+            type: 'string',
+            enum: ['warming', 'cooling', 'stable'],
+            description: '只回傳目前趨勢符合的關係：warming（升溫）、cooling（降溫）、stable（平穩）',
+          },
           event_count: {
             type: 'number',
             description: '要載入的近期事件數量（0 表示不載入，預設 5）',
@@ -40,6 +53,9 @@ export const WORLD_MEMORY_TOOLS: ChatCompletionTool[] = [
 export interface QueryWorldMemoryArgs {
   character_names: string[];
   include_relationships?: boolean;
+  include_relationship_history?: boolean;
+  min_importance?: number;
+  trend?: 'warming' | 'cooling' | 'stable';
   event_count?: number;
 }
 
@@ -77,15 +93,27 @@ export function executeWorldMemoryQuery(
   }
 
   const includeRels = args.include_relationships !== false;
-  if (includeRels && requestedNames.length > 0) {
+  const hasRelFilter = typeof args.min_importance === 'number' || !!args.trend;
+  // Show relationships when names were requested, or when a standalone filter
+  // (importance/trend) was given so the model can browse "the important bonds".
+  if (includeRels && (requestedNames.length > 0 || hasRelFilter)) {
     const relationships = worldMemoryService.listRelationships(db, projectId, branchId);
-    const relevantRels = relationships.filter(r => {
-      const nameA = r.characterAName ?? '';
-      const nameB = r.characterBName ?? '';
-      return requestedNames.some(
-        n => n === nameA || n === nameB,
-      );
-    });
+    const trendLabel = (t: string): string =>
+      t === 'warming' ? '↑升溫' : t === 'cooling' ? '↓降溫' : '→平穩';
+    let relevantRels = relationships;
+    if (requestedNames.length > 0) {
+      relevantRels = relevantRels.filter(r => {
+        const nameA = r.characterAName ?? '';
+        const nameB = r.characterBName ?? '';
+        return requestedNames.some(n => n === nameA || n === nameB);
+      });
+    }
+    if (typeof args.min_importance === 'number') {
+      relevantRels = relevantRels.filter(r => r.importance >= args.min_importance!);
+    }
+    if (args.trend) {
+      relevantRels = relevantRels.filter(r => r.trend === args.trend);
+    }
     if (relevantRels.length > 0) {
       parts.push('【角色關係】');
       for (const r of relevantRels) {
@@ -93,7 +121,17 @@ export function executeWorldMemoryQuery(
         const nameB = r.characterBName ?? r.characterBId;
         const affinity = r.affinityScore >= 0 ? `+${r.affinityScore}` : String(r.affinityScore);
         const desc = r.description ? `：${r.description}` : '';
-        parts.push(`${nameA} —[${r.relationshipType}]— ${nameB}（好感${affinity}）${desc}`);
+        parts.push(`${nameA} —[${r.relationshipType}]— ${nameB}（好感${affinity}，重要度${r.importance}/5，${trendLabel(r.trend)}）${desc}`);
+        if (args.include_relationship_history) {
+          const history = worldMemoryService.listRelationshipChanges(db, r.id).slice(0, 6);
+          for (const h of [...history].reverse()) {
+            const delta = h.affinityChange >= 0 ? `+${h.affinityChange}` : String(h.affinityChange);
+            const typeShift = h.typeBefore && h.typeAfter && h.typeBefore !== h.typeAfter
+              ? `（${h.typeBefore}→${h.typeAfter}）` : '';
+            const note = h.note ? `：${h.note}` : '';
+            parts.push(`    · 好感${delta}${typeShift}${note}`);
+          }
+        }
       }
     }
   }

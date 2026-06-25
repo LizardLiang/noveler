@@ -145,7 +145,7 @@ describe('TC-I-003: Dual-provider fork — OAuth path uses curlComplete', () => 
 
   it('calls curlComplete exactly once on OAuth path and does NOT call SDK create', async () => {
     // Arrange: curlComplete mock returns a refined string
-    vi.mocked(CurlStreamService.curlComplete).mockResolvedValue('Refined via OAuth.');
+    vi.mocked(CurlStreamService.curlComplete).mockResolvedValue({ text: 'Refined via OAuth.', usage: null } as never);
 
     // SDK create should never be called; throw if it is
     const sdkCreateMock = vi.fn().mockRejectedValue(new Error('SDK should not be called on OAuth path'));
@@ -847,7 +847,7 @@ describe('TC-I-025: post-await abort guard (OAuth/curl partial-adopt bug)', () =
       if (opts.signal?.aborted) {
         throw new Error('AbortError: stream was aborted');
       }
-      return 'Partial refined text that was truncated mid';
+      return { text: 'Partial refined text that was truncated mid', usage: null } as never;
     });
 
     // Abort the controller BEFORE the mock resolves (signal already aborted at call time)
@@ -886,7 +886,7 @@ describe('TC-I-025: post-await abort guard (OAuth/curl partial-adopt bug)', () =
     vi.mocked(CurlStreamService.curlComplete).mockImplementation(async () => {
       // Signal gets aborted "during" streaming — abort here to simulate mid-stream abort
       ac.abort();
-      return 'Partial text from mid-stream abort';
+      return { text: 'Partial text from mid-stream abort', usage: null } as never;
     });
 
     const aiService = {
@@ -912,7 +912,7 @@ describe('TC-I-025: post-await abort guard (OAuth/curl partial-adopt bug)', () =
 
   it('TC-I-025c: non-aborted signal — normal refinement is still adopted', async () => {
     // Control: ensure the fix does not regress the happy path
-    vi.mocked(CurlStreamService.curlComplete).mockResolvedValue('Fully refined text here.');
+    vi.mocked(CurlStreamService.curlComplete).mockResolvedValue({ text: 'Fully refined text here.', usage: null } as never);
 
     const ac = new AbortController(); // NOT aborted
 

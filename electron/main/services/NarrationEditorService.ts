@@ -23,6 +23,7 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import type { getAIProviderService } from './AIProviderService.js';
 import { callLLM } from './DialogueEditorService.js';
 import type { ProviderConfig } from './DialogueEditorService.js';
+import type { StepUsageRecord } from '../../shared/types.js';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -38,6 +39,8 @@ export interface RefineNarrationParams {
   storyText: string;
   mode: 'single' | 'two-pass';
   signal?: AbortSignal;
+  /** Optional usage callback — called after each LLM call with the record (step is tagged by the caller). */
+  onUsage?: (rec: Omit<StepUsageRecord, 'step'>) => void;
 }
 
 // ── Quote detection / extraction ──────────────────────────────────────────────
@@ -173,12 +176,23 @@ async function runSingle(
   providerConfig: ProviderConfig,
   model: string,
   signal?: AbortSignal,
+  onUsage?: (rec: Omit<StepUsageRecord, 'step'>) => void,
 ): Promise<string> {
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: buildSinglePassSystemPrompt() },
     { role: 'user', content: storyText },
   ];
-  return callLLM(messages, aiService, providerConfig, model, { maxTokens: REWRITE_MAX_TOKENS, temperature: REWRITE_TEMPERATURE }, signal);
+  const start = performance.now();
+  const { text, usage } = await callLLM(messages, aiService, providerConfig, model, { maxTokens: REWRITE_MAX_TOKENS, temperature: REWRITE_TEMPERATURE }, signal);
+  onUsage?.({
+    model,
+    promptTokens: usage?.promptTokens ?? null,
+    completionTokens: usage?.completionTokens ?? null,
+    totalTokens: usage?.totalTokens ?? null,
+    reasoningTokens: usage?.reasoningTokens ?? null,
+    latencyMs: performance.now() - start,
+  });
+  return text;
 }
 
 async function runCritique(
@@ -187,16 +201,26 @@ async function runCritique(
   providerConfig: ProviderConfig,
   model: string,
   signal?: AbortSignal,
+  onUsage?: (rec: Omit<StepUsageRecord, 'step'>) => void,
 ): Promise<string> {
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: buildCritiqueSystemPrompt() },
     { role: 'user', content: storyText },
   ];
-  const raw = await callLLM(
+  const start = performance.now();
+  const { text: raw, usage } = await callLLM(
     messages, aiService, providerConfig, model,
     { maxTokens: CRITIQUE_MAX_TOKENS, temperature: CRITIQUE_TEMPERATURE },
     signal,
   );
+  onUsage?.({
+    model,
+    promptTokens: usage?.promptTokens ?? null,
+    completionTokens: usage?.completionTokens ?? null,
+    totalTokens: usage?.totalTokens ?? null,
+    reasoningTokens: usage?.reasoningTokens ?? null,
+    latencyMs: performance.now() - start,
+  });
   const text = (raw ?? '').trim();
   if (!text) {
     console.warn('[narration-editor] critique returned empty — proceeding with direct rewrite (no structured feedback)');
@@ -213,12 +237,23 @@ async function runRewrite(
   providerConfig: ProviderConfig,
   model: string,
   signal?: AbortSignal,
+  onUsage?: (rec: Omit<StepUsageRecord, 'step'>) => void,
 ): Promise<string> {
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: buildRewriteSystemPrompt(critiqueText) },
     { role: 'user', content: storyText },
   ];
-  return callLLM(messages, aiService, providerConfig, model, { maxTokens: REWRITE_MAX_TOKENS, temperature: REWRITE_TEMPERATURE }, signal);
+  const start = performance.now();
+  const { text, usage } = await callLLM(messages, aiService, providerConfig, model, { maxTokens: REWRITE_MAX_TOKENS, temperature: REWRITE_TEMPERATURE }, signal);
+  onUsage?.({
+    model,
+    promptTokens: usage?.promptTokens ?? null,
+    completionTokens: usage?.completionTokens ?? null,
+    totalTokens: usage?.totalTokens ?? null,
+    reasoningTokens: usage?.reasoningTokens ?? null,
+    latencyMs: performance.now() - start,
+  });
+  return text;
 }
 
 // ── getNarrationEditorSettings ────────────────────────────────────────────────
@@ -269,7 +304,7 @@ export function getNarrationEditorSettings(
  * the unrefined draft when this returns null.
  */
 export async function refineNarration(params: RefineNarrationParams): Promise<string | null> {
-  const { aiService, providerConfig, model, storyText, mode, signal } = params;
+  const { aiService, providerConfig, model, storyText, mode, signal, onUsage } = params;
 
   // Step 1: cheap pre-check — skip if there's no substantial narration
   if (!containsNarration(storyText)) {
@@ -287,10 +322,10 @@ export async function refineNarration(params: RefineNarrationParams): Promise<st
   try {
     let refined: string;
     if (mode === 'two-pass') {
-      const critique = await runCritique(storyText, aiService, providerConfig, model, signal);
-      refined = await runRewrite(storyText, critique, aiService, providerConfig, model, signal);
+      const critique = await runCritique(storyText, aiService, providerConfig, model, signal, onUsage);
+      refined = await runRewrite(storyText, critique, aiService, providerConfig, model, signal, onUsage);
     } else {
-      refined = await runSingle(storyText, aiService, providerConfig, model, signal);
+      refined = await runSingle(storyText, aiService, providerConfig, model, signal, onUsage);
     }
 
     // Post-await abort guard — discard partial results from a timed-out pass.

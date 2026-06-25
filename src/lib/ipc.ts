@@ -21,6 +21,8 @@ import type {
   GetModelsRequest,
   ModelInfo,
   CreditsInfo,
+  PromptLog,
+  ParagraphUsageLog,
 } from '@/types/ipc';
 import type { GlobalConfig, RecentProject, ParagraphMeta } from '@/types/models';
 
@@ -124,6 +126,10 @@ export const paragraphApi = {
     ipcInvoke<IpcResult<ParagraphMeta[]>>('paragraph:list', projectId, branchId),
   getContent: (projectId: string, branchId: string, paragraphId: string, version?: number) =>
     ipcInvoke<IpcResult<string>>('paragraph:getContent', projectId, branchId, paragraphId, version),
+  getPrompt: (projectId: string, branchId: string, paragraphId: string) =>
+    ipcInvoke<IpcResult<PromptLog | null>>('paragraph:getPrompt', projectId, branchId, paragraphId),
+  getUsage: (projectId: string, branchId: string, paragraphId: string) =>
+    ipcInvoke<IpcResult<ParagraphUsageLog | null>>('paragraph:getUsage', projectId, branchId, paragraphId),
   delete: (projectId: string, branchId: string, paragraphId: string, cascade?: boolean) =>
     ipcInvoke<IpcResult<void>>('paragraph:delete', projectId, branchId, paragraphId, cascade),
   getLinkedWorldMemory: (projectId: string, paragraphId: string) =>
@@ -155,6 +161,8 @@ export const worldMemoryApi = {
 
   getRelationships: (projectId: string, branchId: string) =>
     ipcInvoke<IpcResult<unknown[]>>('worldMemory:getRelationships', projectId, branchId),
+  getRelationshipChanges: (projectId: string, relationshipId: string) =>
+    ipcInvoke<IpcResult<import('@/types/models').RelationshipChange[]>>('worldMemory:getRelationshipChanges', projectId, relationshipId),
   createRelationship: (projectId: string, branchId: string, data: unknown) =>
     ipcInvoke<IpcResult<unknown>>('worldMemory:createRelationship', projectId, branchId, data),
   updateRelationship: (projectId: string, id: string, updates: unknown) =>

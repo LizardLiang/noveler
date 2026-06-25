@@ -19,10 +19,13 @@
 import { v4 as uuidv4 } from 'uuid';
 import { curlComplete } from './CurlStreamService.js';
 import { ollamaChatComplete } from './OllamaNativeService.js';
+import { extractReasoningTokens } from './AIProviderService.js';
+import type { TokenUsage } from './AIProviderService.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import type { ProjectDatabase } from './database.js';
 import { getWorldMemoryService } from './WorldMemoryService.js';
 import type { StoryEvent, EventHorizon } from '../../shared/worldMemoryTypes.js';
+import type { PipelineStep, StepUsageRecord } from '../../shared/types.js';
 
 // ── Horizon helpers ───────────────────────────────────────────────────────────
 
@@ -71,6 +74,8 @@ export interface PlanAndDirectArgs {
   worldRules?: string;
   /** OpenAI client (from AIProviderService) for API-key path. */
   aiClient?: AiClient | null;
+  /** Optional usage callback — called after each LLM call with step tag + record. */
+  onUsage?: (step: PipelineStep, rec: Omit<StepUsageRecord, 'step'>) => void;
 }
 
 /** Minimal OpenAI client shape needed by this service. */
@@ -82,7 +87,15 @@ export interface AiClient {
         messages: ChatCompletionMessageParam[];
         max_tokens: number;
         temperature: number;
-      }): Promise<{ choices: Array<{ message: { content: string | null } }> }>;
+      }): Promise<{
+        choices: Array<{ message: { content: string | null } }>;
+        usage?: {
+          prompt_tokens?: number;
+          completion_tokens?: number;
+          total_tokens?: number;
+          completion_tokens_details?: { reasoning_tokens?: number };
+        };
+      }>;
     };
   };
 }
@@ -100,8 +113,9 @@ async function callLLM(
   model: string,
   options: { maxTokens: number; temperature: number },
   aiClient?: AiClient | null,
-): Promise<string> {
+): Promise<{ text: string; usage: TokenUsage | null }> {
   if (providerConfig.authMethod === 'oauth' && providerConfig.accountId) {
+    // curlComplete already returns {text, usage}
     return curlComplete({
       messages,
       model,
@@ -109,6 +123,7 @@ async function callLLM(
       accountId: providerConfig.accountId,
     });
   } else if (providerConfig.isOllama) {
+    // ollamaChatComplete already returns {text, usage}
     return ollamaChatComplete({
       baseUrl: providerConfig.baseUrl,
       apiKey: providerConfig.apiKey,
@@ -125,7 +140,16 @@ async function callLLM(
       max_tokens: options.maxTokens,
       temperature: options.temperature,
     });
-    return response.choices[0]?.message?.content ?? '';
+    const u = response.usage;
+    return {
+      text: response.choices[0]?.message?.content ?? '',
+      usage: u ? {
+        promptTokens: u.prompt_tokens ?? 0,
+        completionTokens: u.completion_tokens ?? 0,
+        totalTokens: u.total_tokens ?? 0,
+        reasoningTokens: extractReasoningTokens(u),
+      } : null,
+    };
   }
 }
 
@@ -232,6 +256,7 @@ export class DirectorService {
     worldRules: string,
     directorBrief: string,
     aiClient?: AiClient | null,
+    onUsage?: (step: PipelineStep, rec: Omit<StepUsageRecord, 'step'>) => void,
   ): Promise<boolean> {
     // Collect current director-planned beats (with stable indices)
     const allEvents = this.worldMemoryService.listEvents(db, projectId, branchId);
@@ -300,7 +325,17 @@ export class DirectorService {
 
     let raw: string;
     try {
-      raw = await callLLM(messages, providerConfig, model, { maxTokens: 500, temperature: 0.5 }, aiClient);
+      const start = performance.now();
+      const { text, usage } = await callLLM(messages, providerConfig, model, { maxTokens: 1500, temperature: 0.5 }, aiClient);
+      raw = text;
+      onUsage?.('roadmap-reconcile', {
+        model,
+        promptTokens: usage?.promptTokens ?? null,
+        completionTokens: usage?.completionTokens ?? null,
+        totalTokens: usage?.totalTokens ?? null,
+        reasoningTokens: usage?.reasoningTokens ?? null,
+        latencyMs: performance.now() - start,
+      });
     } catch {
       return false;
     }
@@ -420,6 +455,7 @@ export class DirectorService {
     // positional callers working). When set, a directive is produced even with an
     // empty roadmap, and the note takes top priority for this paragraph only.
     directorNote: string = '',
+    onUsage?: (step: PipelineStep, rec: Omit<StepUsageRecord, 'step'>) => void,
   ): Promise<string> {
     const allEvents = this.worldMemoryService.listEvents(db, projectId, branchId);
     const plannedAll = allEvents.filter(e => e.status === 'planned');
@@ -467,7 +503,94 @@ export class DirectorService {
       },
     ];
 
-    return (await callLLM(messages, providerConfig, model, { maxTokens: 400, temperature: 0.4 }, aiClient)).trim();
+    const start = performance.now();
+    const { text, usage } = await callLLM(messages, providerConfig, model, { maxTokens: 1500, temperature: 0.4 }, aiClient);
+    onUsage?.('director-directive', {
+      model,
+      promptTokens: usage?.promptTokens ?? null,
+      completionTokens: usage?.completionTokens ?? null,
+      totalTokens: usage?.totalTokens ?? null,
+      reasoningTokens: usage?.reasoningTokens ?? null,
+      latencyMs: performance.now() - start,
+    });
+    return text.trim();
+  }
+
+  /**
+   * Suggestions path: the Director reads the LATEST paragraph and proposes three
+   * DISTINCT next-step story directions, each phrased as a selectable option that
+   * directly continues from what just happened. At least one direction pushes
+   * toward the planned roadmap when one exists.
+   *
+   * Returns the model's raw reply (one option per line); the caller parses it with
+   * the shared suggestion parser. Never throws; returns '' on failure.
+   */
+  async proposeDirections(args: {
+    db: ProjectDatabase;
+    projectId: string;
+    branchId: string;
+    /** Story-only recent context (author instructions already excluded). */
+    recentStory: string;
+    /** The single most recent story paragraph — all 3 options must continue from it. */
+    latestParagraph: string;
+    worldRules: string;
+    directorBrief: string;
+    providerConfig: ActiveProvider;
+    model: string;
+    aiClient?: AiClient | null;
+    onUsage?: (step: PipelineStep, rec: Omit<StepUsageRecord, 'step'>) => void;
+  }): Promise<string> {
+    try {
+      const {
+        db, projectId, branchId, recentStory, latestParagraph,
+        worldRules, directorBrief, providerConfig, model, aiClient, onUsage,
+      } = args;
+
+      // Horizon-weighted roadmap, reusing the same tuned plot-steering text the main
+      // generation path uses (short = 即將發生, mid = 可鋪陳, long = 保持一致). This
+      // lets the directions consider planned events by imminence, not as a flat list.
+      const { longGoals, nearTermDirective } = this.worldMemoryService.buildPlotSteering(
+        db, projectId, branchId,
+      );
+      const roadmapText = [nearTermDirective, longGoals].filter(Boolean).join('\n\n')
+        || '（目前沒有預先規劃的事件）';
+
+      const messages: ChatCompletionMessageParam[] = [
+        {
+          role: 'system',
+          content: `你是一位故事「導演」。任務是為故事規劃接下來「三種彼此明顯不同」的走向，並把每一種走向各寫成一句可點選的選項。${worldRules ? `\n\n本作世界規則（不可違背）：\n${worldRules}` : ''}${directorBrief ? `\n\n【作者創作走向（須貫徹）】\n${directorBrief}` : ''}
+
+步驟：
+1. 先仔細閱讀【最新段落】，判斷剛剛實際發生了什麼、留下哪些懸念、情緒或鉤子。三種走向都必須從最新段落的「當下處境」自然接續、直接回應剛發生的事，絕不可無視最新段落另起爐灶、跳場或劇透。
+2. 規劃三種「類型不同」的接續走向，分屬不同方向（例如：衝突升級、關係或情感轉折、意外揭露或反轉、行動推進、環境探索…），彼此要有明顯區別。
+3. 必須考量【劇情規劃】：
+   - 三種之中至少要有一個選項直接推進「最近的規劃事件」（近期／中期，即「接下來的劇情目標」）。
+   - 其餘選項可走不同方向，但三個選項全都必須與【劇情規劃】一致——不可與已規劃的事件或長期走向矛盾、不可推翻它們，也不可跳過或提前寫出尚未演到的規劃事件結果。
+   - 中期與長期事件目前只可鋪陳、埋伏筆，不可當成已發生。
+4. 把每一種走向各寫成「一句」具體、誘人的選項，15-30 字，呼應最新段落的人事物，暗示接下來會發生什麼，但不可劇透結果。
+
+回覆格式：只回覆恰好 3 行，每行一個選項。不要前言、不要結語、不要編號、不要項目符號、不要 markdown，也不要任何其他文字。`,
+        },
+        {
+          role: 'user',
+          content: `【故事近況】\n${recentStory || '（故事剛開始）'}\n\n【最新段落（最重要，三個選項都要直接接續這一段）】\n${latestParagraph || '（無）'}\n\n【劇情規劃（尚未發生，需據此安排走向）】\n${roadmapText}\n\n請輸出 3 個故事走向選項。`,
+        },
+      ];
+
+      const start = performance.now();
+      const { text, usage } = await callLLM(messages, providerConfig, model, { maxTokens: 1500, temperature: 1.0 }, aiClient);
+      onUsage?.('suggestions', {
+        model,
+        promptTokens: usage?.promptTokens ?? null,
+        completionTokens: usage?.completionTokens ?? null,
+        totalTokens: usage?.totalTokens ?? null,
+        reasoningTokens: usage?.reasoningTokens ?? null,
+        latencyMs: performance.now() - start,
+      });
+      return text.trim();
+    } catch {
+      return '';
+    }
   }
 
   /**
@@ -494,6 +617,7 @@ export class DirectorService {
         directorNote = '',
         worldRules = '',
         aiClient,
+        onUsage,
       } = args;
 
       // Empty-story no-op: planner skips when there is no story text yet (v1 spec).
@@ -504,14 +628,14 @@ export class DirectorService {
           await this.reconcileRoadmap(
             db, projectId, branchId, recentStory,
             generationToken, isCurrentToken,
-            providerConfig, model, worldRules, directorBrief, aiClient,
+            providerConfig, model, worldRules, directorBrief, aiClient, onUsage,
           );
         }
       }
 
       return await this.buildDirective(
         db, projectId, branchId, recentStory,
-        worldRules, directorBrief, providerConfig, model, aiClient, directorNote,
+        worldRules, directorBrief, providerConfig, model, aiClient, directorNote, onUsage,
       );
     } catch {
       return '';

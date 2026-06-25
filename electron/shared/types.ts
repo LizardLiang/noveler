@@ -40,6 +40,89 @@ export interface ParagraphMetadataFile {
   }[];
 }
 
+/** One message in a persisted prompt log — the actual messages sent to the model. */
+export interface PromptLogMessage {
+  role: string;
+  /** Text content; null for assistant tool-call messages (see toolCalls). */
+  content: string | null;
+  /** Present on tool-result messages. */
+  toolCallId?: string;
+  /** Present on assistant messages that requested tool calls. */
+  toolCalls?: { id: string; name: string; arguments: string }[];
+}
+
+/** Persisted record of the prompt sent to the model when generating a paragraph. */
+export interface PromptLog {
+  paragraphId: string;
+  model: string;
+  createdAt: string;
+  messages: PromptLogMessage[];
+}
+
+// ============================================================
+// Token Usage Tracking types (§3.2)
+// ============================================================
+
+/** Pipeline steps that make LLM calls (FR-004). 9 values. */
+export type PipelineStep =
+  | 'director-directive'
+  | 'world-memory-query'
+  | 'story-generation'
+  | 'narration-edit'      // runNarrationPass → refineNarration (1–2 calls/paragraph)
+  | 'dialogue-edit'       // runDialoguePass  → refineDialogue   (1–2 calls/paragraph)
+  | 'world-memory-update'
+  | 'suggestions'         // standalone AI_SUGGESTIONS handler
+  | 'roadmap-reconcile'   // generate path AND standalone DIRECTOR_REPLAN handler
+  | 'compaction';         // standalone AI_COMPACT handler
+
+/** One LLM call's usage record. A step that fires N times yields N records. */
+export interface StepUsageRecord {
+  step: PipelineStep;
+  model: string;                    // FR-006 — model used for THIS call
+  promptTokens: number | null;      // FR-001
+  completionTokens: number | null;
+  totalTokens: number | null;
+  reasoningTokens: number | null;   // FR-003 — null when unreported (never 0-as-real)
+  latencyMs: number | null;         // FR-005 — wall-clock; null on abort
+}
+
+/** Per-paragraph rollup. FR-007. */
+export interface ParagraphUsageRollup {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  reasoningTokens: number | null;   // null when NO step reported reasoning; else sum of reported
+  latencyMs: number;
+  callCount: number;
+}
+
+/** Persisted at {paragraphDir}/usage.json. FR-008. */
+export interface ParagraphUsageLog {
+  paragraphId: string;
+  createdAt: string;                // ISO; set at flush time
+  steps: StepUsageRecord[];
+  rollup: ParagraphUsageRollup;
+}
+
+/**
+ * One LLM call from a standalone handler (suggestions / compaction / forced
+ * replan) that has no single owning paragraph. Appended to the branch-level
+ * usage-events.json. `originStep` is redundant with `record.step` but kept for
+ * fast filtering; `tipParagraphId` is the branch tip at call time (suggestions /
+ * replan) or null (compaction operates on a range), recorded for diagnostics
+ * only — it is NOT used to attach the record to a paragraph's usage.json.
+ */
+export interface StandaloneUsageEvent {
+  createdAt: string;                // ISO; set at append time
+  tipParagraphId: string | null;
+  record: StepUsageRecord;
+}
+
+/** Persisted at {branchDir}/usage-events.json — append-only array of events. */
+export interface BranchUsageEvents {
+  events: StandaloneUsageEvent[];
+}
+
 export interface RecoverySnapshot {
   timestamp: string;
   projectId: string;
@@ -282,6 +365,7 @@ export interface StreamCompletePayload {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    reasoningTokens: number | null;
   };
   contextBudget?: ContextBudgetPayload;
   isTruncated?: boolean;

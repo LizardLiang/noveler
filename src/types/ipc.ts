@@ -40,6 +40,21 @@ export interface ImportNovelResult {
   wordCount: number;
 }
 
+// ===== 提示詞檢視（送給模型的訊息） =====
+export interface PromptLogMessage {
+  role: string;
+  content: string | null;
+  toolCallId?: string;
+  toolCalls?: { id: string; name: string; arguments: string }[];
+}
+
+export interface PromptLog {
+  paragraphId: string;
+  model: string;
+  createdAt: string;
+  messages: PromptLogMessage[];
+}
+
 // ===== AI 生成 =====
 export interface GenerateRequest {
   projectId: string;
@@ -101,6 +116,7 @@ export interface StreamCompletePayload {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    reasoningTokens: number | null;
   };
   contextBudget?: {
     totalTokens: number;
@@ -223,6 +239,61 @@ export interface RecoveryCheckResult {
   hasRecovery: boolean;
   projectId?: string;
   timestamp?: string;
+}
+
+// ===== Token Usage Tracking — mirror of electron/shared/types.ts (§3.2) =====
+
+/** Pipeline steps that make LLM calls (FR-004). 9 values. */
+export type PipelineStep =
+  | 'director-directive'
+  | 'world-memory-query'
+  | 'story-generation'
+  | 'narration-edit'
+  | 'dialogue-edit'
+  | 'world-memory-update'
+  | 'suggestions'
+  | 'roadmap-reconcile'
+  | 'compaction';
+
+/** One LLM call's usage record. */
+export interface StepUsageRecord {
+  step: PipelineStep;
+  model: string;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  totalTokens: number | null;
+  reasoningTokens: number | null;
+  latencyMs: number | null;
+}
+
+/** Per-paragraph rollup. */
+export interface ParagraphUsageRollup {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  reasoningTokens: number | null;
+  latencyMs: number;
+  callCount: number;
+}
+
+/** Persisted at {paragraphDir}/usage.json. */
+export interface ParagraphUsageLog {
+  paragraphId: string;
+  createdAt: string;
+  steps: StepUsageRecord[];
+  rollup: ParagraphUsageRollup;
+}
+
+/** One LLM call from a standalone handler (no owning paragraph). */
+export interface StandaloneUsageEvent {
+  createdAt: string;
+  tipParagraphId: string | null;
+  record: StepUsageRecord;
+}
+
+/** Persisted at {branchDir}/usage-events.json */
+export interface BranchUsageEvents {
+  events: StandaloneUsageEvent[];
 }
 
 // ===== Re-export for convenience =====

@@ -81,7 +81,8 @@ function toOllamaMessages(messages: ChatCompletionMessageParam[]): Array<{ role:
     .filter(m => m.content.length > 0);
 }
 
-const ZERO_USAGE: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+const ZERO_USAGE: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, reasoningTokens: null };
+export { ZERO_USAGE };
 
 export async function ollamaChatStream(options: OllamaChatStreamOptions): Promise<void> {
   const url = resolveOllamaChatUrl(options.baseUrl);
@@ -165,7 +166,7 @@ export async function ollamaChatStream(options: OllamaChatStreamOptions): Promis
         if (obj.done) {
           const promptTokens = typeof obj.prompt_eval_count === 'number' ? obj.prompt_eval_count : 0;
           const completionTokens = typeof obj.eval_count === 'number' ? obj.eval_count : 0;
-          usage = { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+          usage = { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens, reasoningTokens: null };
         }
       }
     }
@@ -198,12 +199,14 @@ export interface OllamaChatCompleteOptions {
 }
 
 /**
- * Non-streaming native completion (mirrors curlComplete). Returns message.content;
- * the model's thinking (message.thinking) is discarded — these are utility calls
- * (JSON extraction, suggestions, dialogue rewrite) that want only the answer.
- * num_ctx is sized from the message lengths. Throws on transport/HTTP error.
+ * Non-streaming native completion (mirrors curlComplete). Returns message.content
+ * plus usage; the model's thinking (message.thinking) is discarded — these are
+ * utility calls (JSON extraction, suggestions, dialogue rewrite) that want only
+ * the answer. num_ctx is sized from the message lengths. Throws on transport/HTTP
+ * error. Abort=omit: if signal is aborted the fetch throws before return, so no
+ * usage is surfaced (invariant preserved without explicit handling here).
  */
-export async function ollamaChatComplete(options: OllamaChatCompleteOptions): Promise<string> {
+export async function ollamaChatComplete(options: OllamaChatCompleteOptions): Promise<{ text: string; usage: TokenUsage | null }> {
   const url = resolveOllamaChatUrl(options.baseUrl);
   const body = JSON.stringify({
     model: options.model,
@@ -232,7 +235,19 @@ export async function ollamaChatComplete(options: OllamaChatCompleteOptions): Pr
     throw new Error(`Ollama 回應錯誤 (${res.status})：${text.slice(0, 200)}`);
   }
 
-  const data = (await res.json()) as { message?: { content?: string }; error?: string };
+  const data = (await res.json()) as {
+    message?: { content?: string };
+    prompt_eval_count?: number;
+    eval_count?: number;
+    error?: string;
+  };
   if (data.error) throw new Error(data.error);
-  return data.message?.content ?? '';
+
+  const pt = typeof data.prompt_eval_count === 'number' ? data.prompt_eval_count : null;
+  const ct = typeof data.eval_count === 'number' ? data.eval_count : null;
+  const usage: TokenUsage | null = (pt != null || ct != null)
+    ? { promptTokens: pt ?? 0, completionTokens: ct ?? 0, totalTokens: (pt ?? 0) + (ct ?? 0), reasoningTokens: null }
+    : null;
+
+  return { text: data.message?.content ?? '', usage };
 }

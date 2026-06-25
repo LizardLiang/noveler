@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { ProjectDatabase } from './database.js';
-import type { Character, Relationship, StoryEvent, EventHorizon } from '../../shared/worldMemoryTypes.js';
+import type { Character, Relationship, RelationshipChange, RelationshipTrend, StoryEvent, EventHorizon } from '../../shared/worldMemoryTypes.js';
 
 const VALID_HORIZONS: ReadonlySet<EventHorizon> = new Set(['short', 'mid', 'long']);
 
@@ -42,6 +42,45 @@ function rowToCharacter(row: Record<string, unknown>): Character {
   };
 }
 
+const VALID_TRENDS: ReadonlySet<RelationshipTrend> = new Set(['warming', 'cooling', 'stable']);
+
+function normalizeTrend(value: unknown): RelationshipTrend {
+  return VALID_TRENDS.has(value as RelationshipTrend) ? (value as RelationshipTrend) : 'stable';
+}
+
+function clampImportance(value: unknown, fallback = 3): number {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(5, Math.max(1, n));
+}
+
+// Unique-role / identity-defining relationship types — these are inherently
+// high-importance (there is only one 初戀, 師父, 配偶…). Matched as substrings so
+// "青梅竹馬／初戀" or "結拜兄弟" still count.
+const HIGH_IMPORTANCE_TYPE_KEYWORDS = [
+  '初戀', '戀人', '愛人', '情人', '夫', '妻', '配偶', '未婚', '結拜', '師父', '師傅',
+  '師尊', '師徒', '宿敵', '摯愛', '摯友', '生死',
+];
+
+/** Bump importance to at least 4 for identity-defining/unique-role relationship types. */
+function importanceForType(type: string, fallback = 3): number {
+  const base = clampImportance(fallback);
+  const isUniqueRole = HIGH_IMPORTANCE_TYPE_KEYWORDS.some(k => type.includes(k));
+  return isUniqueRole ? Math.max(base, 4) : base;
+}
+
+/** Derive the trend from an affinity delta; a zero delta keeps the prior trend. */
+function deriveTrend(affinityChange: number, prev: RelationshipTrend = 'stable'): RelationshipTrend {
+  if (affinityChange > 0) return 'warming';
+  if (affinityChange < 0) return 'cooling';
+  return prev;
+}
+
+/** Short Chinese label for a relationship trend, used in prompt context. */
+function trendLabel(t: RelationshipTrend): string {
+  return t === 'warming' ? '↑升溫' : t === 'cooling' ? '↓降溫' : '→平穩';
+}
+
 function rowToRelationship(row: Record<string, unknown>): Relationship {
   return {
     id: String(row.id),
@@ -55,9 +94,28 @@ function rowToRelationship(row: Record<string, unknown>): Relationship {
     affinityScore: Number(row.affinity_score ?? 0),
     description: String(row.description ?? ''),
     sharedEvents: parseJsonSafe<string[]>(row.shared_events, []),
+    importance: clampImportance(row.importance, 3),
+    trend: normalizeTrend(row.trend),
     sourceParagraphId: row.source_paragraph_id ? String(row.source_paragraph_id) : null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
+  };
+}
+
+function rowToRelationshipChange(row: Record<string, unknown>): RelationshipChange {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    branchId: String(row.branch_id),
+    relationshipId: String(row.relationship_id),
+    paragraphId: row.paragraph_id ? String(row.paragraph_id) : null,
+    affinityChange: Number(row.affinity_change ?? 0),
+    affinityAfter: Number(row.affinity_after ?? 0),
+    typeBefore: String(row.type_before ?? ''),
+    typeAfter: String(row.type_after ?? ''),
+    note: String(row.note ?? ''),
+    storyTimestamp: String(row.story_timestamp ?? ''),
+    createdAt: String(row.created_at),
   };
 }
 
@@ -228,25 +286,34 @@ export class WorldMemoryService {
       relationshipType: string;
       affinityScore?: number;
       description?: string;
+      importance?: number;
+      trend?: RelationshipTrend;
       sourceParagraphId?: string | null;
     },
   ): Relationship {
     const id = uuidv4();
     const now = new Date().toISOString();
+    const relType = String(data.relationshipType);
+    // Unique-role types start at high importance unless the caller set one explicitly.
+    const importance = data.importance != null
+      ? clampImportance(data.importance)
+      : importanceForType(relType, 3);
     db.prepare(
       `INSERT INTO relationships
-        (id, project_id, branch_id, character_a_id, character_b_id, relationship_type, affinity_score, description, shared_events, source_paragraph_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, project_id, branch_id, character_a_id, character_b_id, relationship_type, affinity_score, description, shared_events, importance, trend, source_paragraph_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
       projectId,
       branchId,
       String(data.characterAId),
       String(data.characterBId),
-      String(data.relationshipType),
+      relType,
       Number(data.affinityScore ?? 0),
       String(data.description ?? ''),
       '[]',
+      importance,
+      normalizeTrend(data.trend),
       data.sourceParagraphId != null ? String(data.sourceParagraphId) : null,
       now,
       now,
@@ -261,6 +328,8 @@ export class WorldMemoryService {
       relationshipType?: string;
       affinityScore?: number;
       description?: string;
+      importance?: number;
+      trend?: RelationshipTrend;
     },
   ): Relationship | null {
     const existing = this.getRelationship(db, id);
@@ -269,12 +338,14 @@ export class WorldMemoryService {
     const now = new Date().toISOString();
     db.prepare(
       `UPDATE relationships SET
-        relationship_type=?, affinity_score=?, description=?, updated_at=?
+        relationship_type=?, affinity_score=?, description=?, importance=?, trend=?, updated_at=?
        WHERE id=?`,
     ).run(
       String(updates.relationshipType ?? existing.relationshipType),
       Number(updates.affinityScore ?? existing.affinityScore),
       String(updates.description ?? existing.description),
+      updates.importance != null ? clampImportance(updates.importance) : existing.importance,
+      updates.trend != null ? normalizeTrend(updates.trend) : existing.trend,
       now,
       id,
     );
@@ -283,6 +354,109 @@ export class WorldMemoryService {
 
   deleteRelationship(db: ProjectDatabase, id: string): void {
     db.prepare('DELETE FROM relationships WHERE id=?').run(id);
+    // Cascade the timeline so a deleted relationship leaves no orphan history.
+    db.prepare('DELETE FROM relationship_changes WHERE relationship_id=?').run(id);
+  }
+
+  // ---- Relationship change timeline (list, not override) ----
+
+  /** Append one entry to a relationship's change timeline. */
+  recordRelationshipChange(
+    db: ProjectDatabase,
+    projectId: string,
+    branchId: string,
+    data: {
+      relationshipId: string;
+      paragraphId?: string | null;
+      affinityChange: number;
+      affinityAfter: number;
+      typeBefore: string;
+      typeAfter: string;
+      note?: string;
+      storyTimestamp?: string;
+    },
+  ): void {
+    db.prepare(
+      `INSERT INTO relationship_changes
+        (id, project_id, branch_id, relationship_id, paragraph_id, affinity_change, affinity_after, type_before, type_after, note, story_timestamp, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      uuidv4(),
+      projectId,
+      branchId,
+      String(data.relationshipId),
+      data.paragraphId != null ? String(data.paragraphId) : null,
+      Number(data.affinityChange ?? 0),
+      Number(data.affinityAfter ?? 0),
+      String(data.typeBefore ?? ''),
+      String(data.typeAfter ?? ''),
+      String(data.note ?? ''),
+      String(data.storyTimestamp ?? ''),
+      new Date().toISOString(),
+    );
+  }
+
+  /** Newest-first timeline for a relationship. */
+  listRelationshipChanges(db: ProjectDatabase, relationshipId: string): RelationshipChange[] {
+    const rows = db.prepare(
+      'SELECT * FROM relationship_changes WHERE relationship_id=? ORDER BY created_at DESC',
+    ).all(relationshipId);
+    return rows.map(rowToRelationshipChange);
+  }
+
+  /**
+   * Apply a relationship change as an APPEND (not an override): adjust the snapshot
+   * (cumulative affinity, recomputed trend, optional type/description/importance) and
+   * record a timeline entry. This is the path the AI world-change extractor uses so
+   * the bond accrues history instead of being clobbered each beat.
+   */
+  applyRelationshipChange(
+    db: ProjectDatabase,
+    projectId: string,
+    branchId: string,
+    relationshipId: string,
+    change: {
+      affinityChange?: number;
+      relationshipType?: string;
+      description?: string;
+      importance?: number;
+      note?: string;
+      paragraphId?: string | null;
+      storyTimestamp?: string;
+    },
+  ): Relationship | null {
+    const existing = this.getRelationship(db, relationshipId);
+    if (!existing) return null;
+
+    const affinityChange = Number(change.affinityChange ?? 0);
+    const affinityAfter = Math.min(100, Math.max(-100, existing.affinityScore + affinityChange));
+    const typeAfter = change.relationshipType != null ? String(change.relationshipType) : existing.relationshipType;
+    const trend = deriveTrend(affinityChange, existing.trend);
+    // A type change to a unique role raises importance; otherwise honor an explicit value.
+    const importance = change.importance != null
+      ? clampImportance(change.importance)
+      : importanceForType(typeAfter, existing.importance);
+
+    this.updateRelationship(db, relationshipId, {
+      relationshipType: typeAfter,
+      affinityScore: affinityAfter,
+      description: change.description,
+      importance,
+      trend,
+    });
+
+    this.recordRelationshipChange(db, projectId, branchId, {
+      relationshipId,
+      paragraphId: change.paragraphId ?? null,
+      affinityChange,
+      affinityAfter,
+      typeBefore: existing.relationshipType,
+      typeAfter,
+      note: change.note ?? change.description ?? '',
+      storyTimestamp: change.storyTimestamp ?? '',
+    });
+
+    return this.getRelationship(db, relationshipId);
   }
 
   // ---- Events ----
@@ -651,7 +825,24 @@ export class WorldMemoryService {
         const nameB = r.characterBName ?? r.characterBId;
         const affinity = r.affinityScore >= 0 ? `+${r.affinityScore}` : String(r.affinityScore);
         const desc = r.description ? `：${r.description}` : '';
-        parts.push(`${nameA} —[${r.relationshipType}]— ${nameB}（好感${affinity}）${desc}`);
+        parts.push(`${nameA} —[${r.relationshipType}]— ${nameB}（好感${affinity}，重要度${r.importance}/5，${trendLabel(r.trend)}）${desc}`);
+      }
+    }
+
+    // Identity-defining relationships (初戀, 師父, 配偶…) must NEVER silently drop from
+    // context just because both parties are momentarily off-screen — that is exactly
+    // how the model "forgets" a unique role and invents a second one (a new 初戀).
+    // So always surface off-screen relationships too, compactly (no affinity/desc churn).
+    const inactiveRelationships = relationships.filter(
+      r => !activeCharIds.has(r.characterAId) && !activeCharIds.has(r.characterBId),
+    );
+    if (inactiveRelationships.length > 0) {
+      parts.push('【其他既定關係（設定，不可變更或新增矛盾）】');
+      for (const r of inactiveRelationships) {
+        const nameA = r.characterAName ?? r.characterAId;
+        const nameB = r.characterBName ?? r.characterBId;
+        const desc = r.description ? `：${r.description}` : '';
+        parts.push(`- ${nameA} —[${r.relationshipType}]— ${nameB}（重要度${r.importance}/5，${trendLabel(r.trend)}）${desc}`);
       }
     }
 
@@ -693,6 +884,47 @@ export class WorldMemoryService {
     const summary = parts.join('\n');
     if (summary.length <= maxChars) return summary;
     return summary.slice(0, maxChars) + '\n…（已截斷）';
+  }
+
+  /**
+   * Canonical, must-not-be-contradicted facts: every character's identity line and
+   * every relationship, UNFILTERED by recency. Used to anchor 前情提要 compaction so
+   * the summariser never drops or alters an established setting (e.g. who is whose
+   * 初戀). Kept compact (identities + relationships only, no events).
+   */
+  buildCanonFacts(
+    db: ProjectDatabase,
+    projectId: string,
+    branchId: string,
+    maxChars = 1500,
+  ): string {
+    const characters = this.listCharacters(db, projectId);
+    const relationships = this.listRelationships(db, projectId, branchId);
+    const parts: string[] = [];
+
+    if (characters.length > 0) {
+      parts.push('【角色設定】');
+      for (const c of characters) {
+        const faction = c.faction ? `（${c.faction}）` : '';
+        const status = c.status ? `：${c.status}` : '';
+        parts.push(`- ${c.name}${faction}${status}`);
+      }
+    }
+
+    if (relationships.length > 0) {
+      parts.push('【角色關係（既定設定，不可變更或新增矛盾）】');
+      for (const r of relationships) {
+        const nameA = r.characterAName ?? r.characterAId;
+        const nameB = r.characterBName ?? r.characterBId;
+        const desc = r.description ? `：${r.description}` : '';
+        const imp = r.importance >= 4 ? `（重要度${r.importance}/5）` : '';
+        parts.push(`- ${nameA} —[${r.relationshipType}]— ${nameB}${imp}${desc}`);
+      }
+    }
+
+    const out = parts.join('\n');
+    if (!out) return '';
+    return out.length <= maxChars ? out : out.slice(0, maxChars) + '\n…（已截斷）';
   }
 
   // ---- Plot steering (horizon-weighted compliance injection) ----
@@ -836,6 +1068,8 @@ export class WorldMemoryService {
               relationshipType: prev.relationshipType,
               affinityScore: prev.affinityScore,
               description: prev.description,
+              importance: prev.importance,
+              trend: prev.trend,
             });
             break;
           case 'event':
@@ -856,6 +1090,12 @@ export class WorldMemoryService {
 
       db.prepare('DELETE FROM world_memory_changelog WHERE id=?').run(String(entry.id));
     }
+
+    // Drop relationship timeline entries attributed to the rolled-back paragraphs so
+    // the bond history doesn't show changes from beats that no longer exist.
+    db.prepare(
+      `DELETE FROM relationship_changes WHERE branch_id=? AND paragraph_id IN (${placeholders})`,
+    ).run(branchId, ...detachedIds);
   }
 }
 

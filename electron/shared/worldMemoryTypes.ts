@@ -21,6 +21,9 @@ export interface Character {
   updatedAt: string;
 }
 
+/** Direction the bond is currently moving — its "temperature". */
+export type RelationshipTrend = 'warming' | 'cooling' | 'stable';
+
 export interface Relationship {
   id: string;
   projectId: string;
@@ -33,9 +36,33 @@ export interface Relationship {
   affinityScore: number;
   description: string;
   sharedEvents: string[];
+  /** Importance 1-5 — how central this bond is; filterable by the model. */
+  importance: number;
+  /** Whether the bond is warming, cooling, or stable (from recent changes). */
+  trend: RelationshipTrend;
   sourceParagraphId: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** One entry in a relationship's append-only change timeline. */
+export interface RelationshipChange {
+  id: string;
+  projectId: string;
+  branchId: string;
+  relationshipId: string;
+  paragraphId: string | null;
+  /** Affinity delta this beat applied (+ closer, − apart). */
+  affinityChange: number;
+  /** Cumulative affinity after this change. */
+  affinityAfter: number;
+  /** Relationship type before/after, when this beat changed it (else equal). */
+  typeBefore: string;
+  typeAfter: string;
+  /** Short human note on what happened ("雨中告白"). */
+  note: string;
+  storyTimestamp: string;
+  createdAt: string;
 }
 
 export interface StoryEvent {

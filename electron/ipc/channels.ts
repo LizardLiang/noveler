@@ -40,6 +40,7 @@ export const IPC_CHANNELS = {
   // 段落管理
   PARAGRAPH_LIST: 'paragraph:list',
   PARAGRAPH_GET_CONTENT: 'paragraph:getContent',
+  PARAGRAPH_GET_PROMPT: 'paragraph:getPrompt',
   PARAGRAPH_DELETE: 'paragraph:delete',
   PARAGRAPH_REGENERATE: 'paragraph:regenerate',
   PARAGRAPH_SWITCH_VERSION: 'paragraph:switchVersion',
@@ -47,6 +48,7 @@ export const IPC_CHANNELS = {
   PARAGRAPH_ROLLBACK: 'paragraph:rollback',
   PARAGRAPH_GET_LINKED_WORLD_MEMORY: 'paragraph:getLinkedWorldMemory',
   PARAGRAPH_CREATE_OPENING: 'paragraph:createOpening',
+  PARAGRAPH_GET_USAGE: 'paragraph:getUsage',
 
   // 世界記憶
   WORLD_MEMORY_GET_CHARACTERS: 'worldMemory:getCharacters',
@@ -56,6 +58,7 @@ export const IPC_CHANNELS = {
   WORLD_MEMORY_DELETE_ALL_CHARACTERS: 'worldMemory:deleteAllCharacters',
 
   WORLD_MEMORY_GET_RELATIONSHIPS: 'worldMemory:getRelationships',
+  WORLD_MEMORY_GET_RELATIONSHIP_CHANGES: 'worldMemory:getRelationshipChanges',
   WORLD_MEMORY_CREATE_RELATIONSHIP: 'worldMemory:createRelationship',
   WORLD_MEMORY_UPDATE_RELATIONSHIP: 'worldMemory:updateRelationship',
   WORLD_MEMORY_DELETE_RELATIONSHIP: 'worldMemory:deleteRelationship',

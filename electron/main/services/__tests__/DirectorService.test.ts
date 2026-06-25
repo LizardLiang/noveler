@@ -16,14 +16,15 @@
  *   TC-12: planAndDirect no-ops when recentStory is empty and plan=true
  *   TC-13: B-1 implicit-discard — beat index omitted by model is treated as discard
  *   TC-14: B-2 stale token at entry — neither deletes nor inserts occur (no partial write)
+ *   TC-20: proposeDirections injects horizon-weighted planned events + anchor-one/constrain-all rule
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Mock external dependencies BEFORE importing DirectorService ─────────────
 
-const mockCurlComplete = vi.fn().mockResolvedValue('');
-const mockOllamaChatComplete = vi.fn().mockResolvedValue('');
+const mockCurlComplete = vi.fn().mockResolvedValue({ text: '', usage: null });
+const mockOllamaChatComplete = vi.fn().mockResolvedValue({ text: '', usage: null });
 
 vi.mock('../CurlStreamService.js', () => ({
   curlComplete: (...args: unknown[]) => mockCurlComplete(...args),
@@ -35,8 +36,12 @@ vi.mock('../OllamaNativeService.js', () => ({
 
 // Mock WorldMemoryService singleton
 const mockListEvents = vi.fn();
+const mockBuildPlotSteering = vi.fn().mockReturnValue({ longGoals: '', nearTermDirective: '' });
 vi.mock('../WorldMemoryService.js', () => ({
-  getWorldMemoryService: () => ({ listEvents: mockListEvents }),
+  getWorldMemoryService: () => ({
+    listEvents: mockListEvents,
+    buildPlotSteering: mockBuildPlotSteering,
+  }),
 }));
 
 // ── Import service AFTER mocks ───────────────────────────────────────────────
@@ -373,7 +378,7 @@ describe('DirectorService', () => {
 
   // ── TC-8: dual-provider routing — oauth/curl ─────────────────────────────
   it('TC-8: routes through curlComplete for oauth provider', async () => {
-    mockCurlComplete.mockResolvedValueOnce('directive text');
+    mockCurlComplete.mockResolvedValueOnce({ text: 'directive text', usage: null });
     const now = new Date().toISOString();
     // Need at least 1 planned event so buildDirective actually calls the LLM
     mockListEvents.mockReturnValue([
@@ -398,7 +403,7 @@ describe('DirectorService', () => {
 
   // ── TC-9: dual-provider routing — ollama ─────────────────────────────────
   it('TC-9: routes through ollamaChatComplete for ollama provider', async () => {
-    mockOllamaChatComplete.mockResolvedValueOnce('ollama directive');
+    mockOllamaChatComplete.mockResolvedValueOnce({ text: 'ollama directive', usage: null });
     const now = new Date().toISOString();
     mockListEvents.mockReturnValue([
       { id: 'e1', name: 'Event 1', description: 'desc', status: 'planned' as const, source: 'author' as const, participatingCharacters: [], storyTimestamp: '', projectId: 'proj-1', branchId: 'branch-1', impact: '', paragraphId: null, createdAt: now, updatedAt: now },
@@ -754,5 +759,54 @@ describe('DirectorService', () => {
 
     expect(insertedArgs.length).toBe(1);
     expect(insertedArgs[0][8]).toBe('short');
+  });
+
+  // ── TC-20: proposeDirections surfaces horizon-weighted plan + anchor rule ─────
+  it('TC-20: proposeDirections injects planned events (near + long) and the anchor-one/constrain-all rule', async () => {
+    mockBuildPlotSteering.mockReturnValue({
+      longGoals: '本作的長期劇情走向：\n- 終局決戰',
+      nearTermDirective: '【接下來的劇情目標（必須朝此推進）】\n- 主角抵達城門',
+    });
+
+    let capturedSystem = '';
+    let capturedUser = '';
+    const aiClient: AiClient = {
+      chat: {
+        completions: {
+          create: vi.fn().mockImplementation(async (params: { messages: Array<{ role: string; content: string }> }) => {
+            capturedSystem = String(params.messages.find(m => m.role === 'system')?.content ?? '');
+            capturedUser = String(params.messages.find(m => m.role === 'user')?.content ?? '');
+            return { choices: [{ message: { content: '選項一\n選項二\n選項三' } }] };
+          }),
+        },
+      },
+    };
+
+    const db = makeTxDb(
+      vi.fn().mockReturnValue({ run: vi.fn(), get: vi.fn().mockReturnValue({ n: 0 }), all: vi.fn().mockReturnValue([]) }),
+    ) as unknown as import('../database.js').ProjectDatabase;
+
+    const raw = await service.proposeDirections({
+      db,
+      projectId: 'proj-1',
+      branchId: 'branch-1',
+      recentStory: 'recent story',
+      latestParagraph: 'the latest paragraph text',
+      worldRules: '',
+      directorBrief: '',
+      providerConfig: makeProvider(),
+      model: 'gpt-4',
+      aiClient,
+    });
+
+    expect(raw).toBe('選項一\n選項二\n選項三');
+    expect(mockBuildPlotSteering).toHaveBeenCalledWith(db, 'proj-1', 'branch-1');
+    // Both near-term and long-term planned events surfaced in the prompt
+    expect(capturedUser).toContain('主角抵達城門');
+    expect(capturedUser).toContain('終局決戰');
+    // Latest paragraph is the primary anchor
+    expect(capturedUser).toContain('the latest paragraph text');
+    // anchor-one / constrain-all binding rule present in the system prompt
+    expect(capturedSystem).toContain('至少要有一個選項直接推進');
   });
 });

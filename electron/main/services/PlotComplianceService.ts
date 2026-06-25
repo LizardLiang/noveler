@@ -71,15 +71,15 @@ async function callLLM(
   signal?: AbortSignal,
 ): Promise<string> {
   if (providerConfig.authMethod === 'oauth' && providerConfig.accountId) {
-    return curlComplete({
+    return (await curlComplete({
       messages,
       model,
       accessToken: providerConfig.apiKey,
       accountId: providerConfig.accountId,
       signal,
-    });
+    })).text;
   } else if (providerConfig.isOllama) {
-    return ollamaChatComplete({
+    return (await ollamaChatComplete({
       baseUrl: providerConfig.baseUrl,
       apiKey: providerConfig.apiKey,
       messages,
@@ -87,7 +87,7 @@ async function callLLM(
       temperature: CHECK_TEMPERATURE,
       maxTokens: CHECK_MAX_TOKENS,
       signal,
-    });
+    })).text;
   } else {
     const client = aiService.getClient();
     if (!client) return '';

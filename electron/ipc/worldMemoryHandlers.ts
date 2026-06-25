@@ -6,7 +6,7 @@ import { getWorldMemoryService, type WorldMemoryService } from '../main/services
 import { getOpenProject } from './projectHandlers.js';
 import type { ProjectDatabase } from '../main/services/database.js';
 import type { IpcResult } from '../shared/types.js';
-import type { Character, Relationship, StoryEvent } from '../shared/worldMemoryTypes.js';
+import type { Character, Relationship, RelationshipChange, RelationshipTrend, StoryEvent } from '../shared/worldMemoryTypes.js';
 
 // ============================================================
 // World Memory IPC Handlers
@@ -123,7 +123,7 @@ export function registerWorldMemoryHandlers(): void {
       _event,
       projectId: string,
       id: string,
-      updates: { relationshipType?: string; affinityScore?: number; description?: string },
+      updates: { relationshipType?: string; affinityScore?: number; description?: string; importance?: number; trend?: RelationshipTrend },
     ): IpcResult<Relationship> => {
       try {
         const db = getOpenProject(projectId);
@@ -131,6 +131,19 @@ export function registerWorldMemoryHandlers(): void {
         const relationship = service.updateRelationship(db, id, updates);
         if (!relationship) return { success: false, error: { code: 'NOT_FOUND', message: '找不到關係' } };
         return { success: true, data: relationship };
+      } catch (err) {
+        return { success: false, error: { code: 'DB_ERROR', message: String(err) } };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.WORLD_MEMORY_GET_RELATIONSHIP_CHANGES,
+    (_event, projectId: string, relationshipId: string): IpcResult<RelationshipChange[]> => {
+      try {
+        const db = getOpenProject(projectId);
+        if (!db) return { success: false, error: { code: 'PROJECT_NOT_OPEN', message: '專案未開啟' } };
+        return { success: true, data: service.listRelationshipChanges(db, relationshipId) };
       } catch (err) {
         return { success: false, error: { code: 'DB_ERROR', message: String(err) } };
       }
@@ -638,15 +651,27 @@ export async function applyWorldChange(
 
       const existing = service.findRelationshipByCharacters(db, branchId, charA.id, charB.id);
       if (!existing) {
+        const initialAffinity = typeof d.affinityChange === 'number' ? d.affinityChange : 0;
         const created = service.createRelationship(db, projectId, branchId, {
           characterAId: charA.id,
           characterBId: charB.id,
           relationshipType: String(d.type ?? 'acquaintance'),
-          affinityScore: typeof d.affinityChange === 'number' ? d.affinityChange : 0,
+          affinityScore: initialAffinity,
           description: d.description != null ? String(d.description) : '',
+          importance: typeof d.importance === 'number' ? d.importance : undefined,
           sourceParagraphId: paragraphId,
         });
         recordChangelog(db, projectId, branchId, paragraphId, 'relationship', created.id, 'create', null, d);
+        // Seed the timeline with the relationship's first beat.
+        service.recordRelationshipChange(db, projectId, branchId, {
+          relationshipId: created.id,
+          paragraphId,
+          affinityChange: initialAffinity,
+          affinityAfter: created.affinityScore,
+          typeBefore: '',
+          typeAfter: created.relationshipType,
+          note: d.description != null ? String(d.description) : '關係建立',
+        });
       }
       break;
     }
@@ -664,13 +689,16 @@ export async function applyWorldChange(
       const rel = service.findRelationshipByCharacters(db, branchId, charA.id, charB.id);
       if (rel) {
         const snapshot = { ...rel };
-        const affinityChange = typeof d.affinityChange === 'number' ? d.affinityChange : 0;
-        const relUpdates: Record<string, unknown> = {
-          affinityScore: rel.affinityScore + affinityChange,
-        };
-        if (d.type != null) relUpdates.relationshipType = String(d.type);
-        if (d.description != null) relUpdates.description = String(d.description);
-        service.updateRelationship(db, rel.id, relUpdates);
+        // Append to the timeline (list, not override): adjusts the snapshot's
+        // cumulative affinity + trend and records this beat as a history entry.
+        service.applyRelationshipChange(db, projectId, branchId, rel.id, {
+          affinityChange: typeof d.affinityChange === 'number' ? d.affinityChange : 0,
+          relationshipType: d.type != null ? String(d.type) : undefined,
+          description: d.description != null ? String(d.description) : undefined,
+          importance: typeof d.importance === 'number' ? d.importance : undefined,
+          note: d.description != null ? String(d.description) : undefined,
+          paragraphId,
+        });
         recordChangelog(db, projectId, branchId, paragraphId, 'relationship', rel.id, 'update', snapshot, d);
       }
       break;

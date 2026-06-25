@@ -12,6 +12,7 @@ import { ContextBudgetIndicator } from '@/components/story/ContextBudgetIndicato
 import { StorySuggestions } from '@/components/story/StorySuggestions';
 import { OpeningInput } from '@/components/story/OpeningInput';
 import { DirectorPanel } from '@/components/story/DirectorPanel';
+import { PromptViewerModal } from '@/components/story/PromptViewerModal';
 import { SystemPromptEditor } from '@/components/settings/SystemPromptEditor';
 import { WorldRulesEditor } from '@/components/settings/WorldRulesEditor';
 import { WritingStyleConfig } from '@/components/settings/WritingStyleConfig';
@@ -23,7 +24,7 @@ import { GlobalSearch } from '@/components/search/GlobalSearch';
 import { StoryStats } from '@/components/stats/StoryStats';
 import { zhTW } from '@/i18n/zh-TW';
 import type { ParagraphMeta } from '@/types/models';
-import type { ContextBudgetInfo } from '@/types/ipc';
+import type { ContextBudgetInfo, PromptLog, ParagraphUsageLog } from '@/types/ipc';
 
 export function StoryPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -75,6 +76,8 @@ export function StoryPage() {
   const [genWordCount, setGenWordCount] = useState<number | undefined>(undefined);
   // One-off director steer for the next paragraph only (cleared after each send).
   const [directorNote, setDirectorNote] = useState('');
+  // Prompt viewer modal — null when closed; holds the fetched prompt log + usage log otherwise.
+  const [promptViewer, setPromptViewer] = useState<{ loading: boolean; log: PromptLog | null; usageLog: ParagraphUsageLog | null } | null>(null);
   // Cascade delete dialog state
   const [cascadeDialog, setCascadeDialog] = useState<{
     paragraphId: string;
@@ -497,6 +500,21 @@ export function StoryPage() {
   const handleCopy = useCallback((content: string) => {
     navigator.clipboard.writeText(content).catch(() => { /* ignore */ });
   }, []);
+
+  // Open the prompt viewer for an AI paragraph — fetch prompt log and usage log in parallel.
+  const handleViewPrompt = useCallback(async (paragraphId: string) => {
+    if (!projectId || !currentBranchId) return;
+    setPromptViewer({ loading: true, log: null, usageLog: null });
+    const [promptResult, usageResult] = await Promise.all([
+      paragraphApi.getPrompt(projectId, currentBranchId, paragraphId),
+      paragraphApi.getUsage(projectId, currentBranchId, paragraphId),
+    ]);
+    setPromptViewer({
+      loading: false,
+      log: promptResult.success ? promptResult.data : null,
+      usageLog: usageResult.success ? usageResult.data : null,
+    });
+  }, [projectId, currentBranchId]);
 
   // Jump to top / bottom of the story area
   const scrollToTop = useCallback(() => {
@@ -1050,6 +1068,7 @@ export function StoryPage() {
                   onCopy={handleCopy}
                   onSwitchVersion={handleSwitchVersion}
                   onEdit={handleEdit}
+                  onViewPrompt={para.type === 'ai' ? handleViewPrompt : undefined}
                 />
               </div>
             );
@@ -1309,6 +1328,16 @@ export function StoryPage() {
           projectId={projectId}
           branchId={currentBranchId}
           onClose={() => setShowStats(false)}
+        />
+      )}
+
+      {/* Prompt viewer modal — the messages sent to the model for a paragraph */}
+      {promptViewer && (
+        <PromptViewerModal
+          loading={promptViewer.loading}
+          log={promptViewer.log}
+          onClose={() => setPromptViewer(null)}
+          usageLog={promptViewer.usageLog}
         />
       )}
     </div>

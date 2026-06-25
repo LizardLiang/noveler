@@ -11,5 +11,9 @@
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true
   },
-  "include": ["electron", "vite.config.ts", "vitest.config.ts", "package.json"]
+  "include": ["electron", "vite.config.ts", "vitest.config.ts", "package.json"],
+  "exclude": [
+    "electron/main/services/__tests__/i18n.usage.test.ts",
+    "electron/main/services/__tests__/ui.promptViewer.usage.test.ts"
+  ]
 }

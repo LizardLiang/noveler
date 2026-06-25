@@ -35,6 +35,8 @@ interface ParagraphBlockProps {
   onSwitchVersion?: (id: string, version: number) => void;
   /** Save an author edit; receives the full content (prose + preserved world-changes tail). */
   onEdit?: (id: string, content: string) => void;
+  /** Open the prompt viewer for this paragraph (AI paragraphs only). */
+  onViewPrompt?: (id: string) => void;
 }
 
 export const ParagraphBlock = memo(function ParagraphBlock({
@@ -51,6 +53,7 @@ export const ParagraphBlock = memo(function ParagraphBlock({
   onCopy,
   onSwitchVersion,
   onEdit,
+  onViewPrompt,
 }: ParagraphBlockProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [metaExpanded, setMetaExpanded] = useState(false);
@@ -512,7 +515,7 @@ export const ParagraphBlock = memo(function ParagraphBlock({
             style={{
               position: 'absolute',
               top: statusLabel ? 28 : 0,
-              right: 8,
+              left: 'calc(100% + 6px)',
               display: 'flex',
               flexDirection: 'column',
               gap: 4,
@@ -565,6 +568,21 @@ export const ParagraphBlock = memo(function ParagraphBlock({
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                   <path d="M2 7A5 5 0 1 1 7 12" />
                   <polyline points="2,4 2,7 5,7" />
+                </svg>
+              </ToolbarButton>
+            )}
+
+            {/* View prompt (AI only) — shows the messages sent to the model */}
+            {paragraph.type === 'ai' && onViewPrompt && (
+              <ToolbarButton
+                title={zhTW.paragraph.viewPrompt}
+                onClick={() => onViewPrompt(paragraph.id)}
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3.5 1.5h5L11 4v8.5H3.5z" />
+                  <polyline points="8.5,1.5 8.5,4 11,4" />
+                  <line x1="5" y1="7" x2="9" y2="7" />
+                  <line x1="5" y1="9.5" x2="9" y2="9.5" />
                 </svg>
               </ToolbarButton>
             )}

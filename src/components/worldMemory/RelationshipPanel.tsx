@@ -86,7 +86,7 @@ export function RelationshipPanel() {
   }, [projectId, branchId, newCharAId, newCharBId, newType, createRelationship]);
 
   const handleUpdate = useCallback(
-    async (id: string, updates: { relationshipType?: string; affinityScore?: number; description?: string }) => {
+    async (id: string, updates: { relationshipType?: string; affinityScore?: number; description?: string; importance?: number }) => {
       if (!projectId) return;
       await updateRelationshipRemote(projectId, id, updates);
     },
@@ -379,6 +379,7 @@ export function RelationshipPanel() {
             <RelationshipCard
               key={r.id}
               relationship={r}
+              projectId={projectId ?? ''}
               onUpdate={handleUpdate}
               onDelete={handleDelete}
             />

@@ -2,8 +2,9 @@ import { ipcMain } from 'electron';
 import { IPC_CHANNELS } from './channels.js';
 import { getParagraphService } from '../main/services/ParagraphService.js';
 import { getWorldMemoryService } from '../main/services/WorldMemoryService.js';
+import { getFileStorageService } from '../main/services/FileStorageService.js';
 import { getProjectStoragePath, getOpenProject } from './projectHandlers.js';
-import type { IpcResult } from '../shared/types.js';
+import type { IpcResult, PromptLog, ParagraphUsageLog } from '../shared/types.js';
 import type { ParagraphRecord } from '../main/services/ParagraphService.js';
 
 export function registerParagraphHandlers(): void {
@@ -40,6 +41,25 @@ export function registerParagraphHandlers(): void {
         return { success: true, data: content };
       } catch (err) {
         return { success: false, error: { code: 'PARAGRAPH_READ_ERROR', message: '讀取段落內容失敗', details: err } };
+      }
+    },
+  );
+
+  // Get the persisted prompt (messages sent to the model) for a paragraph.
+  // data is null when no prompt was logged (e.g. paragraphs generated before this
+  // feature existed, or user-typed paragraphs).
+  ipcMain.handle(
+    IPC_CHANNELS.PARAGRAPH_GET_PROMPT,
+    (_event, projectId: string, branchId: string, paragraphId: string): IpcResult<PromptLog | null> => {
+      try {
+        const projectPath = getProjectStoragePath(projectId);
+        if (!projectPath) {
+          return { success: false, error: { code: 'PROJECT_NOT_OPEN', message: '專案未開啟' } };
+        }
+        const log = getFileStorageService().readPromptLog(projectPath, branchId, paragraphId);
+        return { success: true, data: log };
+      } catch (err) {
+        return { success: false, error: { code: 'PARAGRAPH_PROMPT_ERROR', message: '讀取提示詞失敗', details: err } };
       }
     },
   );
@@ -206,6 +226,24 @@ export function registerParagraphHandlers(): void {
         return { success: true, data: undefined };
       } catch (err) {
         return { success: false, error: { code: 'PARAGRAPH_ROLLBACK_ERROR', message: '回溯段落失敗', details: err } };
+      }
+    },
+  );
+
+  // Get the persisted usage log for a paragraph.
+  // data is null when no usage was logged (pre-feature paragraphs or user-typed paragraphs).
+  ipcMain.handle(
+    IPC_CHANNELS.PARAGRAPH_GET_USAGE,
+    (_event, projectId: string, branchId: string, paragraphId: string): IpcResult<ParagraphUsageLog | null> => {
+      try {
+        const projectPath = getProjectStoragePath(projectId);
+        if (!projectPath) {
+          return { success: false, error: { code: 'PROJECT_NOT_OPEN', message: '專案未開啟' } };
+        }
+        const log = getFileStorageService().readUsageLog(projectPath, branchId, paragraphId);
+        return { success: true, data: log };
+      } catch (err) {
+        return { success: false, error: { code: 'PARAGRAPH_USAGE_ERROR', message: '讀取用量紀錄失敗', details: err } };
       }
     },
   );

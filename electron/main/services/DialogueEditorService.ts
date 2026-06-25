@@ -13,11 +13,14 @@
 
 import { curlComplete } from './CurlStreamService.js';
 import { ollamaChatComplete } from './OllamaNativeService.js';
+import { extractReasoningTokens } from './AIProviderService.js';
+import type { TokenUsage } from './AIProviderService.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import type { getAIProviderService } from './AIProviderService.js';
 // CLARITY_FLOOR / RUBRIC / BAN_LIST / REWRITE_RULES are shared from ./dialogueCraft.js.
 // They are re-exported for tests via the existing export block near the bottom of this file.
 import { CLARITY_FLOOR, RUBRIC, BAN_LIST, REWRITE_RULES } from './dialogueCraft.js';
+import type { StepUsageRecord } from '../../shared/types.js';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -53,6 +56,8 @@ export interface RefineDialogueParams {
   characters: CharacterForRoster[];
   mode: 'single' | 'two-pass';
   signal?: AbortSignal;
+  /** Optional usage callback — called after each LLM call with the record (step is tagged by the caller). */
+  onUsage?: (rec: Omit<StepUsageRecord, 'step'>) => void;
 }
 
 // ── containsDialogue ────────────────────────────────────────────────────────
@@ -236,15 +241,16 @@ const DEGENERATE_GUARD_RATIO = 0.5;
 
 // ── Dual-provider LLM call ──────────────────────────────────────────────────
 
-async function callLLM(
+export async function callLLM(
   messages: ChatCompletionMessageParam[],
   aiService: ReturnType<typeof getAIProviderService>,
   providerConfig: ProviderConfig,
   model: string,
   options: { maxTokens: number; temperature: number },
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<{ text: string; usage: TokenUsage | null }> {
   if (providerConfig.authMethod === 'oauth' && providerConfig.accountId) {
+    // curlComplete already returns {text, usage}
     return curlComplete({
       messages,
       model,
@@ -253,6 +259,7 @@ async function callLLM(
       signal,
     });
   } else if (providerConfig.isOllama) {
+    // ollamaChatComplete already returns {text, usage}
     return ollamaChatComplete({
       baseUrl: providerConfig.baseUrl,
       apiKey: providerConfig.apiKey,
@@ -264,7 +271,7 @@ async function callLLM(
     });
   } else {
     const client = aiService.getClient();
-    if (!client) return '';
+    if (!client) return { text: '', usage: null };
     const response = await client.chat.completions.create(
       {
         model,
@@ -274,7 +281,16 @@ async function callLLM(
       },
       { signal },
     );
-    return response.choices[0]?.message?.content ?? '';
+    const u = response.usage;
+    return {
+      text: response.choices[0]?.message?.content ?? '',
+      usage: u ? {
+        promptTokens: u.prompt_tokens ?? 0,
+        completionTokens: u.completion_tokens ?? 0,
+        totalTokens: u.total_tokens ?? 0,
+        reasoningTokens: extractReasoningTokens(u),
+      } : null,
+    };
   }
 }
 
@@ -287,13 +303,24 @@ async function runSingle(
   providerConfig: ProviderConfig,
   model: string,
   signal?: AbortSignal,
+  onUsage?: (rec: Omit<StepUsageRecord, 'step'>) => void,
 ): Promise<string> {
   const systemPrompt = buildSinglePassSystemPrompt(roster);
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: storyText },
   ];
-  return callLLM(messages, aiService, providerConfig, model, { maxTokens: REWRITE_MAX_TOKENS, temperature: REWRITE_TEMPERATURE }, signal);
+  const start = performance.now();
+  const { text, usage } = await callLLM(messages, aiService, providerConfig, model, { maxTokens: REWRITE_MAX_TOKENS, temperature: REWRITE_TEMPERATURE }, signal);
+  onUsage?.({
+    model,
+    promptTokens: usage?.promptTokens ?? null,
+    completionTokens: usage?.completionTokens ?? null,
+    totalTokens: usage?.totalTokens ?? null,
+    reasoningTokens: usage?.reasoningTokens ?? null,
+    latencyMs: performance.now() - start,
+  });
+  return text;
 }
 
 // ── Two-pass: critique ───────────────────────────────────────────────────────
@@ -309,17 +336,27 @@ async function runCritique(
   providerConfig: ProviderConfig,
   model: string,
   signal?: AbortSignal,
+  onUsage?: (rec: Omit<StepUsageRecord, 'step'>) => void,
 ): Promise<CritiqueResult> {
   const systemPrompt = buildCritiqueSystemPrompt(roster);
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: storyText },
   ];
-  const raw = await callLLM(
+  const start = performance.now();
+  const { text: raw, usage } = await callLLM(
     messages, aiService, providerConfig, model,
     { maxTokens: CRITIQUE_MAX_TOKENS, temperature: CRITIQUE_TEMPERATURE },
     signal,
   );
+  onUsage?.({
+    model,
+    promptTokens: usage?.promptTokens ?? null,
+    completionTokens: usage?.completionTokens ?? null,
+    totalTokens: usage?.totalTokens ?? null,
+    reasoningTokens: usage?.reasoningTokens ?? null,
+    latencyMs: performance.now() - start,
+  });
 
   // Plain-text critique — no JSON to parse, so it can't "fail to parse".
   // Reasoning models (gpt-5.5 on Codex) reliably return prose but often return
@@ -343,13 +380,24 @@ async function runRewrite(
   providerConfig: ProviderConfig,
   model: string,
   signal?: AbortSignal,
+  onUsage?: (rec: Omit<StepUsageRecord, 'step'>) => void,
 ): Promise<string> {
   const systemPrompt = buildRewriteSystemPrompt(roster, critiqueText);
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: storyText },
   ];
-  return callLLM(messages, aiService, providerConfig, model, { maxTokens: REWRITE_MAX_TOKENS, temperature: REWRITE_TEMPERATURE }, signal);
+  const start = performance.now();
+  const { text, usage } = await callLLM(messages, aiService, providerConfig, model, { maxTokens: REWRITE_MAX_TOKENS, temperature: REWRITE_TEMPERATURE }, signal);
+  onUsage?.({
+    model,
+    promptTokens: usage?.promptTokens ?? null,
+    completionTokens: usage?.completionTokens ?? null,
+    totalTokens: usage?.totalTokens ?? null,
+    reasoningTokens: usage?.reasoningTokens ?? null,
+    latencyMs: performance.now() - start,
+  });
+  return text;
 }
 
 // ── getDialogueEditorSettings ────────────────────────────────────────────────
@@ -408,7 +456,7 @@ export function getDialogueEditorSettings(
  * decide whether its result is stale.
  */
 export async function refineDialogue(params: RefineDialogueParams): Promise<string | null> {
-  const { aiService, providerConfig, model, storyText, characters, mode, signal } = params;
+  const { aiService, providerConfig, model, storyText, characters, mode, signal, onUsage } = params;
 
   // Step 1: cheap pre-check — skip if no dialogue
   if (!containsDialogue(storyText)) {
@@ -429,10 +477,10 @@ export async function refineDialogue(params: RefineDialogueParams): Promise<stri
     let refined: string;
 
     if (mode === 'two-pass') {
-      const critique = await runCritique(storyText, roster, aiService, providerConfig, model, signal);
-      refined = await runRewrite(storyText, roster, critique.text, aiService, providerConfig, model, signal);
+      const critique = await runCritique(storyText, roster, aiService, providerConfig, model, signal, onUsage);
+      refined = await runRewrite(storyText, roster, critique.text, aiService, providerConfig, model, signal, onUsage);
     } else {
-      refined = await runSingle(storyText, roster, aiService, providerConfig, model, signal);
+      refined = await runSingle(storyText, roster, aiService, providerConfig, model, signal, onUsage);
     }
 
     // Post-await abort guard: if the signal was aborted after the LLM call
@@ -484,7 +532,6 @@ export {
   buildCritiqueSystemPrompt,
   buildRewriteSystemPrompt,
   buildRosterSection,
-  callLLM,
   RUBRIC,
   BAN_LIST,
   REWRITE_RULES,

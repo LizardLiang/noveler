@@ -1,7 +1,9 @@
 import OpenAI from 'openai';
+import type { Stream } from 'openai/core/streaming.js';
 import type {
   ChatCompletionMessageParam,
   ChatCompletionTool,
+  ChatCompletionChunk,
 } from 'openai/resources/chat/completions.js';
 
 export interface StreamChunk {
@@ -25,6 +27,7 @@ export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  reasoningTokens: number | null;   // null when provider omits / excluded / not applicable
 }
 
 export interface AIError {
@@ -46,6 +49,22 @@ export interface OAuthProviderConfig {
   defaultModel: string;
   accountId: string;
 }
+
+// ---- Token reasoning extraction helper (§7.1a) ----------------------------
+
+/**
+ * Extract reasoning_tokens from a Chat Completions usage object.
+ * OpenAI SDK / OpenRouter / DeepSeek field: completion_tokens_details.reasoning_tokens
+ */
+export function extractReasoningTokens(usage: unknown): number | null {
+  const d = (usage as { completion_tokens_details?: { reasoning_tokens?: number } } | undefined)
+    ?.completion_tokens_details;
+  return typeof d?.reasoning_tokens === 'number' ? d.reasoning_tokens : null;
+}
+
+// Passive OpenRouter reasoning probe cache (§7.5, GA-3).
+// null = not yet observed; true = field survived exclude:true; false = field absent.
+export let openRouterReasoningUnderExclude: boolean | null = null;
 
 // Map of common model context window sizes (tokens)
 export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
@@ -130,6 +149,7 @@ class AIProviderService {
       promptTokens: response.usage?.prompt_tokens ?? 0,
       completionTokens: response.usage?.completion_tokens ?? 0,
       totalTokens: response.usage?.total_tokens ?? 0,
+      reasoningTokens: extractReasoningTokens(response.usage),
     };
 
     const toolCalls = choice.message.tool_calls
@@ -178,9 +198,9 @@ class AIProviderService {
         stream_options: { include_usage: true },
       } as Parameters<typeof this.client.chat.completions.create>[0], {
         signal: options.signal,
-      });
+      }) as unknown as Stream<ChatCompletionChunk>;
 
-      let usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+      let usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, reasoningTokens: null };
 
       for await (const chunk of stream) {
         // OpenRouter (and some OpenAI-compatible gateways) report mid-stream failures —
@@ -214,10 +234,19 @@ class AIProviderService {
         }
         // Capture usage from last chunk (stream_options.include_usage)
         if (chunk.usage) {
+          const reasoningTokens = extractReasoningTokens(chunk.usage);
+          // Passive OpenRouter reasoning probe (§7.5, GA-3):
+          // Observe whether reasoning_tokens survives exclude:true on the first OpenRouter call.
+          const isOpenRouterStream = (this.currentConfig?.baseUrl || '').includes('openrouter.ai');
+          if (isOpenRouterStream && openRouterReasoningUnderExclude === null) {
+            openRouterReasoningUnderExclude = reasoningTokens !== null;
+            console.log(`[token-usage] openRouterReasoningUnderExclude probe result: ${openRouterReasoningUnderExclude}`);
+          }
           usage = {
             promptTokens: chunk.usage.prompt_tokens,
             completionTokens: chunk.usage.completion_tokens,
             totalTokens: chunk.usage.total_tokens,
+            reasoningTokens,
           };
         }
       }
@@ -228,7 +257,7 @@ class AIProviderService {
       if (err instanceof Error && err.name === 'AbortError') {
         // Cancelled — send done without error
         options.onChunk({ delta: '', done: true });
-        options.onDone({ promptTokens: 0, completionTokens: 0, totalTokens: 0 });
+        options.onDone({ promptTokens: 0, completionTokens: 0, totalTokens: 0, reasoningTokens: null });
         return;
       }
 

@@ -188,6 +188,9 @@ CREATE TABLE IF NOT EXISTS relationships (
     affinity_score  INTEGER NOT NULL DEFAULT 0,
     description     TEXT DEFAULT '',
     shared_events   TEXT DEFAULT '[]',
+    -- Author/AI importance 1-5 (filterable); trend = warming|cooling|stable.
+    importance      INTEGER NOT NULL DEFAULT 3,
+    trend           TEXT NOT NULL DEFAULT 'stable',
     source_paragraph_id TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
@@ -195,6 +198,26 @@ CREATE TABLE IF NOT EXISTS relationships (
 
 CREATE INDEX IF NOT EXISTS idx_relationships_branch ON relationships(branch_id);
 CREATE INDEX IF NOT EXISTS idx_relationships_characters ON relationships(character_a_id, character_b_id);
+
+-- Append-only timeline of relationship changes (list, not override): each row is
+-- one beat where the bond shifted — the affinity delta, any type change, and a note.
+CREATE TABLE IF NOT EXISTS relationship_changes (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL,
+    branch_id       TEXT NOT NULL,
+    relationship_id TEXT NOT NULL,
+    paragraph_id    TEXT,
+    affinity_change INTEGER NOT NULL DEFAULT 0,
+    affinity_after  INTEGER NOT NULL DEFAULT 0,
+    type_before     TEXT DEFAULT '',
+    type_after      TEXT DEFAULT '',
+    note            TEXT DEFAULT '',
+    story_timestamp TEXT DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_rel_changes_rel ON relationship_changes(relationship_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_rel_changes_paragraph ON relationship_changes(paragraph_id);
 
 CREATE TABLE IF NOT EXISTS events (
     id              TEXT PRIMARY KEY,
@@ -448,6 +471,50 @@ function migrateProjectDatabase(db: ProjectDatabase): void {
     }
   } catch {
     // Table may not exist yet (first run) — schema DDL creates it with the column
+  }
+
+  try {
+    const importanceCols = db.prepare(
+      "SELECT name FROM pragma_table_info('relationships') WHERE name='importance'",
+    ).all();
+    if (importanceCols.length === 0) {
+      db.exec("ALTER TABLE relationships ADD COLUMN importance INTEGER NOT NULL DEFAULT 3");
+    }
+  } catch {
+    // Table may not exist yet (first run) — schema DDL creates it with the column
+  }
+
+  try {
+    const trendCols = db.prepare(
+      "SELECT name FROM pragma_table_info('relationships') WHERE name='trend'",
+    ).all();
+    if (trendCols.length === 0) {
+      db.exec("ALTER TABLE relationships ADD COLUMN trend TEXT NOT NULL DEFAULT 'stable'");
+    }
+  } catch {
+    // Table may not exist yet (first run) — schema DDL creates it with the column
+  }
+
+  try {
+    // Append-only relationship timeline (added alongside importance/trend).
+    db.exec(`CREATE TABLE IF NOT EXISTS relationship_changes (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      branch_id       TEXT NOT NULL,
+      relationship_id TEXT NOT NULL,
+      paragraph_id    TEXT,
+      affinity_change INTEGER NOT NULL DEFAULT 0,
+      affinity_after  INTEGER NOT NULL DEFAULT 0,
+      type_before     TEXT DEFAULT '',
+      type_after      TEXT DEFAULT '',
+      note            TEXT DEFAULT '',
+      story_timestamp TEXT DEFAULT '',
+      created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    db.exec("CREATE INDEX IF NOT EXISTS idx_rel_changes_rel ON relationship_changes(relationship_id, created_at)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_rel_changes_paragraph ON relationship_changes(paragraph_id)");
+  } catch {
+    // Best effort — schema DDL also defines this table for fresh projects.
   }
 
   try {

@@ -90,7 +90,7 @@ export async function curlStream(options: CurlStreamOptions): Promise<void> {
 
     const curl = spawn('curl', args);
     let buffer = '';
-    let usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    let usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, reasoningTokens: null };
     let errored = false;
     let stderrOutput = '';
 
@@ -120,12 +120,14 @@ export async function curlStream(options: CurlStreamOptions): Promise<void> {
           }
         } else if (evt.type === 'response.completed') {
           const resp = evt.data.response as Record<string, unknown>;
-          const u = resp?.usage as Record<string, number> | undefined;
+          const u = resp?.usage as Record<string, unknown> | undefined;
           if (u) {
+            const rd = u.output_tokens_details as { reasoning_tokens?: number } | undefined;
             usage = {
-              promptTokens: u.input_tokens ?? 0,
-              completionTokens: u.output_tokens ?? 0,
-              totalTokens: u.total_tokens ?? 0,
+              promptTokens: (u.input_tokens as number) ?? 0,
+              completionTokens: (u.output_tokens as number) ?? 0,
+              totalTokens: (u.total_tokens as number) ?? 0,
+              reasoningTokens: typeof rd?.reasoning_tokens === 'number' ? rd.reasoning_tokens : null,
             };
           }
         } else if (evt.type === 'response.failed') {
@@ -147,7 +149,7 @@ export async function curlStream(options: CurlStreamOptions): Promise<void> {
     curl.on('close', (code) => {
       if (options.signal?.aborted) {
         options.onChunk({ delta: '', done: true });
-        options.onDone({ promptTokens: 0, completionTokens: 0, totalTokens: 0 });
+        options.onDone({ promptTokens: 0, completionTokens: 0, totalTokens: 0, reasoningTokens: null });
         resolve();
         return;
       }
@@ -191,7 +193,8 @@ export async function curlStream(options: CurlStreamOptions): Promise<void> {
 
 /**
  * Non-streaming completion over the same Codex endpoint — accumulates the
- * streamed deltas and returns the full text. Throws on stream error.
+ * streamed deltas and returns the full text plus usage. Throws on stream error.
+ * Abort path: throws before returning (abort=omit invariant — no usage surfaced).
  */
 export async function curlComplete(options: {
   messages: ChatCompletionMessageParam[];
@@ -199,8 +202,9 @@ export async function curlComplete(options: {
   accessToken: string;
   accountId: string;
   signal?: AbortSignal;
-}): Promise<string> {
+}): Promise<{ text: string; usage: TokenUsage | null }> {
   let text = '';
+  let usage: TokenUsage | null = null;
   let error: AIError | null = null;
   await curlStream({
     ...options,
@@ -210,7 +214,7 @@ export async function curlComplete(options: {
     onError: (err) => {
       error = err;
     },
-    onDone: () => {},
+    onDone: (u) => { usage = u; },
   });
   if (error) throw new Error((error as AIError).message);
   // If the signal was aborted (e.g. dialogue-pass timeout), the stream resolved
@@ -223,7 +227,7 @@ export async function curlComplete(options: {
   if (options.signal?.aborted) {
     throw new Error('AbortError: stream was aborted');
   }
-  return text;
+  return { text, usage };
 }
 
 export async function curlTestConnection(
