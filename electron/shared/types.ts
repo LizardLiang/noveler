@@ -275,6 +275,63 @@ export interface GenerateRequest {
   directorNote?: string;
 }
 
+export type FullStoryJobStatus = 'planning' | 'generating' | 'paused' | 'failed' | 'completed';
+
+export interface FullStoryStartRequest {
+  projectId: string;
+  branchId: string;
+  prompt: string;
+  targetCharacterCount: number;
+}
+
+export interface FullStorySection {
+  index: number;
+  title: string;
+  goal: string;
+  targetCharacterCount: number;
+  actualCharacterCount: number;
+  paragraphId: string | null;
+  status: 'pending' | 'generating' | 'completed';
+}
+
+export interface FullStoryJob {
+  id: string;
+  projectId: string;
+  branchId: string;
+  prompt: string;
+  targetCharacterCount: number;
+  status: FullStoryJobStatus;
+  currentSection: number;
+  finalCharacterCount: number;
+  modelUsed: string | null;
+  lastError: string | null;
+  sections: FullStorySection[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FullStoryProgressPayload {
+  job: FullStoryJob;
+  phase: 'planning' | 'generating' | 'correcting' | 'validating' | 'paused' | 'failed' | 'completed';
+  paragraph?: {
+    id: string;
+    projectId: string;
+    branchId: string;
+    type: 'ai';
+    status: 'normal';
+    position: number;
+    activeVersion: number;
+    totalVersions: number;
+    modelUsed: string | null;
+    tokenCount: number;
+    detectionHistory: [];
+    createdAt: string;
+    updatedAt: string;
+    content: string;
+  };
+  message?: string;
+}
+
 // ===== Test Story Generator (設定頁彈窗，獨立於專案) =====
 export interface TestStyle {
   genre?: string;       // 文風／類型（如「網文爽文」）→ 映射為強風格指令

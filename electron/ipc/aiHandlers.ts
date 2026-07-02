@@ -52,7 +52,7 @@ let lastBudgetPayload: ContextBudgetPayload | null = null;
 /**
  * Read writing style from project_settings and return as hint string.
  */
-function getWritingStyleHints(projectId: string): string {
+export function getWritingStyleHints(projectId: string): string {
   try {
     const projectDb = getOpenProject(projectId);
     if (!projectDb) return '';
@@ -82,7 +82,7 @@ function getWritingStyleHints(projectId: string): string {
 /**
  * Read custom instructions from project_settings (formerly "system_prompt").
  */
-function getCustomInstructions(projectId: string): string {
+export function getCustomInstructions(projectId: string): string {
   try {
     const projectDb = getOpenProject(projectId);
     if (!projectDb) return '';
@@ -142,7 +142,7 @@ function getDirectorGatherRounds(projectId: string): number {
  * Read the project's world rules (世界規則) from project_settings.
  * Injected into the system prompt as the highest-priority, must-not-break world setting.
  */
-function getWorldRules(projectId: string): string {
+export function getWorldRules(projectId: string): string {
   try {
     const projectDb = getOpenProject(projectId);
     if (!projectDb) return '';
@@ -505,7 +505,7 @@ const WORLD_CHANGE_EXTRACTION_PROMPT = `你是世界狀態追蹤器。閱讀使�
  * story text with a cheap low-temperature call, so the main generation prompt
  * stays pure prose. Best-effort — returns null on any failure.
  */
-async function extractWorldChanges(
+export async function extractWorldChanges(
   aiService: ReturnType<typeof getAIProviderService>,
   providerConfig: { apiKey: string; baseUrl: string; defaultModel: string; authMethod?: 'api_key' | 'oauth'; accountId?: string; isOllama?: boolean },
   model: string,
@@ -589,7 +589,7 @@ function isOllamaProvider(providerType: string, baseUrl: string): boolean {
   );
 }
 
-function getActiveProvider(): { apiKey: string; baseUrl: string; defaultModel: string; authMethod?: 'api_key' | 'oauth'; accountId?: string; isOllama?: boolean } | null {
+export function getActiveProvider(): { apiKey: string; baseUrl: string; defaultModel: string; authMethod?: 'api_key' | 'oauth'; accountId?: string; isOllama?: boolean } | null {
   try {
     const db = getGlobalDatabase();
     const row = db.prepare(
@@ -652,7 +652,7 @@ function resolveRequestApiKey(req: GetModelsRequest): string {
   return '';
 }
 
-async function ensureFreshOAuthToken(): Promise<void> {
+export async function ensureFreshOAuthToken(): Promise<void> {
   try {
     const db = getGlobalDatabase();
     const row = db.prepare(

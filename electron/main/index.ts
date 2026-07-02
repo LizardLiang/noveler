@@ -17,6 +17,7 @@ import { registerBranchHandlers } from '../ipc/branchHandlers.js';
 import { registerTemplateHandlers } from '../ipc/templateHandlers.js';
 import { registerSearchHandlers } from '../ipc/searchHandlers.js';
 import { registerStatsHandlers } from '../ipc/statsHandlers.js';
+import { registerFullStoryHandlers } from '../ipc/fullStoryHandlers.js';
 import { getTemplateService } from './services/TemplateService.js';
 import { getGlobalDatabase } from './services/database.js';
 import { getAutoSaveService } from './services/AutoSaveService.js';
@@ -114,6 +115,7 @@ async function createWindow() {
   registerTemplateHandlers();
   registerSearchHandlers();
   registerStatsHandlers();
+  registerFullStoryHandlers();
 
   // Seed built-in templates on startup
   try {

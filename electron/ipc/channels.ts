@@ -18,6 +18,12 @@ export const IPC_CHANNELS = {
   // AI 生成
   AI_GENERATE: 'ai:generate',
   AI_CANCEL: 'ai:cancel',
+  FULL_STORY_START: 'fullStory:start',
+  FULL_STORY_GET_STATUS: 'fullStory:getStatus',
+  FULL_STORY_RESUME: 'fullStory:resume',
+  FULL_STORY_CANCEL: 'fullStory:cancel',
+  FULL_STORY_DISCARD: 'fullStory:discard',
+  FULL_STORY_PROGRESS: 'fullStory:progress',
   // 導演重新規劃大綱（作者下達創作走向後，強制重排 AI 規劃事件）
   DIRECTOR_REPLAN: 'director:replan',
   AI_TEST_CONNECTION: 'ai:testConnection',

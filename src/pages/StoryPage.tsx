@@ -1,6 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { projectApi, aiApi, paragraphApi, branchApi, settingsApi } from '@/lib/ipc';
+import { projectApi, aiApi, paragraphApi, branchApi, settingsApi, fullStoryApi, ipcOn } from '@/lib/ipc';
 import { useProjectStore } from '@/stores/projectStore';
 import { useStoryStore } from '@/stores/storyStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -13,6 +13,7 @@ import { StorySuggestions } from '@/components/story/StorySuggestions';
 import { OpeningInput } from '@/components/story/OpeningInput';
 import { DirectorPanel } from '@/components/story/DirectorPanel';
 import { PromptViewerModal } from '@/components/story/PromptViewerModal';
+import { FullStoryGenerator } from '@/components/story/FullStoryGenerator';
 import { SystemPromptEditor } from '@/components/settings/SystemPromptEditor';
 import { WorldRulesEditor } from '@/components/settings/WorldRulesEditor';
 import { WritingStyleConfig } from '@/components/settings/WritingStyleConfig';
@@ -24,7 +25,8 @@ import { GlobalSearch } from '@/components/search/GlobalSearch';
 import { StoryStats } from '@/components/stats/StoryStats';
 import { zhTW } from '@/i18n/zh-TW';
 import type { ParagraphMeta } from '@/types/models';
-import type { ContextBudgetInfo, PromptLog, ParagraphUsageLog } from '@/types/ipc';
+import type { ContextBudgetInfo, PromptLog, ParagraphUsageLog, FullStoryJob, FullStoryProgressPayload } from '@/types/ipc';
+import type { IpcRendererEvent } from 'electron';
 
 export function StoryPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -65,6 +67,7 @@ export function StoryPage() {
 
   const [loading, setLoading] = useState(true);
   const [openingCreating, setOpeningCreating] = useState(false);
+  const [fullStoryJob, setFullStoryJob] = useState<FullStoryJob | null>(null);
   const [contextBudget, setContextBudget] = useState<ContextBudgetInfo | null>(null);
   const [truncationWarning, setTruncationWarning] = useState<{ count: number } | null>(null);
   const [showStorySettings, setShowStorySettings] = useState(false);
@@ -127,6 +130,38 @@ export function StoryPage() {
       setSuggestionsLoading(false);
     }
   }, [projectId, currentBranchId, setSuggestions, setSuggestionsLoading]);
+
+  const fullStoryActive = fullStoryJob?.status === 'planning' || fullStoryJob?.status === 'generating';
+
+  useEffect(() => {
+    if (!projectId || loading) return;
+    fullStoryApi.getStatus(projectId).then(result => {
+      if (!result.success) return;
+      setFullStoryJob(result.data);
+      const active = result.data?.status === 'planning' || result.data?.status === 'generating';
+      if (active) setGenerating(true);
+    }).catch(() => { /* best effort */ });
+  }, [projectId, loading, setGenerating]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    return ipcOn<FullStoryProgressPayload>('fullStory:progress', (_event: IpcRendererEvent, data) => {
+      if (data.job.projectId !== projectId) return;
+      setFullStoryJob(data.job);
+      const active = data.job.status === 'planning' || data.job.status === 'generating';
+      setGenerating(active);
+      setCurrentPhase(active ? data.phase : null);
+      if (data.paragraph) {
+        const { content, ...paragraph } = data.paragraph;
+        const exists = useStoryStore.getState().paragraphs.some(item => item.id === paragraph.id);
+        if (exists) updateParagraph(paragraph.id, paragraph);
+        else addParagraph(paragraph);
+        setParagraphContent(paragraph.id, content ?? '');
+      }
+      if (data.phase === 'completed') fetchSuggestions();
+      if (data.phase === 'failed' && data.message) setGenerationError(data.message);
+    });
+  }, [projectId, addParagraph, updateParagraph, setParagraphContent, setGenerating, setCurrentPhase, setGenerationError, fetchSuggestions]);
 
   // Manually compact older paragraphs into the running 前情提要 summary.
   const handleCompact = useCallback(async () => {
@@ -380,6 +415,54 @@ export function StoryPage() {
       setOpeningCreating(false);
     }
   }, [projectId, isGenerating, openingCreating, currentBranchId, setCurrentBranchId, addParagraph, setParagraphContent, setGenerationError]);
+
+  const handleFullStoryStart = useCallback(async (prompt: string, targetCharacterCount: number): Promise<string | null> => {
+    if (!projectId) return '專案未開啟';
+    setGenerationError(null);
+    const result = await fullStoryApi.start({
+      projectId,
+      branchId: currentBranchId ?? '',
+      prompt,
+      targetCharacterCount,
+    });
+    if (!result.success) return result.error.message;
+    setFullStoryJob(result.data);
+    if (!currentBranchId) setCurrentBranchId(result.data.branchId);
+    setGenerating(true);
+    setCurrentPhase('planning');
+    return null;
+  }, [projectId, currentBranchId, setCurrentBranchId, setGenerating, setCurrentPhase, setGenerationError]);
+
+  const handleFullStoryResume = useCallback(async () => {
+    if (!projectId) return;
+    setGenerationError(null);
+    const result = await fullStoryApi.resume(projectId);
+    if (result.success) {
+      setFullStoryJob(result.data);
+      setGenerating(true);
+      setCurrentPhase(result.data.sections.length ? 'generating' : 'planning');
+    } else {
+      setGenerationError(result.error.message);
+    }
+  }, [projectId, setGenerating, setCurrentPhase, setGenerationError]);
+
+  const handleFullStoryCancel = useCallback(async () => {
+    if (!projectId) return;
+    await fullStoryApi.cancel(projectId);
+  }, [projectId]);
+
+  const handleFullStoryDiscard = useCallback(async () => {
+    if (!projectId) return;
+    const result = await fullStoryApi.discard(projectId);
+    if (!result.success) {
+      setGenerationError(result.error.message);
+      return;
+    }
+    setFullStoryJob(null);
+    setParagraphs([]);
+    setBulkContents(new Map());
+    setGenerating(false);
+  }, [projectId, setParagraphs, setBulkContents, setGenerating, setGenerationError]);
 
   // Delete paragraph — with cascade dialog for associated world memory
   const handleDelete = useCallback(async (paragraphId: string) => {
@@ -1002,7 +1085,7 @@ export function StoryPage() {
           }}
         >
           {/* Empty state */}
-          {paragraphs.length === 0 && !isGenerating && (
+          {paragraphs.length === 0 && (!isGenerating || !!fullStoryJob) && (
             <div
               style={{
                 display: 'flex',
@@ -1036,10 +1119,18 @@ export function StoryPage() {
               </p>
 
               {hasActiveProvider && (
-                <div style={{ marginTop: 28, width: '100%', display: 'flex', justifyContent: 'center' }}>
-                  <OpeningInput
+                <div style={{ marginTop: 28, width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
+                  {!fullStoryJob && <OpeningInput
                     onSubmit={handleOpeningSubmit}
                     creating={openingCreating}
+                  />}
+                  {!fullStoryJob && <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>或</div>}
+                  <FullStoryGenerator
+                    job={fullStoryJob}
+                    onStart={handleFullStoryStart}
+                    onResume={handleFullStoryResume}
+                    onCancel={handleFullStoryCancel}
+                    onDiscard={handleFullStoryDiscard}
                   />
                 </div>
               )}
@@ -1074,8 +1165,18 @@ export function StoryPage() {
             );
           })}
 
+          {fullStoryJob && fullStoryJob.status !== 'completed' && paragraphs.length > 0 && (
+            <FullStoryGenerator
+              job={fullStoryJob}
+              onStart={handleFullStoryStart}
+              onResume={handleFullStoryResume}
+              onCancel={handleFullStoryCancel}
+              onDiscard={handleFullStoryDiscard}
+            />
+          )}
+
           {/* Story suggestions */}
-          {!isGenerating && paragraphs.length > 0 && hasActiveProvider && (suggestions.length > 0 || suggestionsLoading) && (
+          {!isGenerating && paragraphs.length > 0 && hasActiveProvider && (!fullStoryJob || fullStoryJob.status === 'completed') && (suggestions.length > 0 || suggestionsLoading) && (
             <StorySuggestions
               suggestions={suggestions}
               loading={suggestionsLoading}
@@ -1087,7 +1188,7 @@ export function StoryPage() {
 
           {/* Continue button when no suggestions loaded yet — plus a regenerate
               button so skipped/empty suggestions can always be retried */}
-          {!isGenerating && paragraphs.length > 0 && hasActiveProvider && !suggestionsLoading && suggestions.length === 0 && (
+          {!isGenerating && paragraphs.length > 0 && hasActiveProvider && (!fullStoryJob || fullStoryJob.status === 'completed') && !suggestionsLoading && suggestions.length === 0 && (
             <div style={{ padding: '12px 0', display: 'flex', gap: 8 }}>
               <button
                 onClick={() => handleSend('繼續故事')}
@@ -1287,7 +1388,7 @@ export function StoryPage() {
       )}
 
       {/* One-off director note — steers only the next paragraph, then clears */}
-      {hasActiveProvider && paragraphs.length > 0 && (
+      {hasActiveProvider && paragraphs.length > 0 && (!fullStoryJob || fullStoryJob.status === 'completed') && (
         <div style={{ maxWidth: 800, width: '100%', alignSelf: 'center', boxSizing: 'border-box', padding: '0 24px', marginBottom: 4 }}>
           <input
             type="text"
@@ -1314,10 +1415,10 @@ export function StoryPage() {
       {/* Chat input */}
       <ChatInput
         onSend={handleSend}
-        onCancel={cancelGeneration}
+        onCancel={fullStoryActive ? handleFullStoryCancel : cancelGeneration}
         isGenerating={isGenerating}
         phase={currentPhase}
-        disabled={!hasActiveProvider}
+        disabled={!hasActiveProvider || (!!fullStoryJob && fullStoryJob.status !== 'completed')}
         wordCount={genWordCount}
         onWordCountChange={setGenWordCount}
       />

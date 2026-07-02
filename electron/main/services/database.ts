@@ -259,6 +259,38 @@ CREATE TABLE IF NOT EXISTS paragraph_meta (
 
 CREATE INDEX IF NOT EXISTS idx_paragraph_meta_branch ON paragraph_meta(branch_id, position);
 
+CREATE TABLE IF NOT EXISTS full_story_jobs (
+    id                    TEXT PRIMARY KEY,
+    project_id            TEXT NOT NULL,
+    branch_id             TEXT NOT NULL,
+    prompt                TEXT NOT NULL,
+    target_character_count INTEGER NOT NULL,
+    status                TEXT NOT NULL DEFAULT 'planning',
+    outline_json          TEXT NOT NULL DEFAULT '[]',
+    current_section       INTEGER NOT NULL DEFAULT 0,
+    final_character_count INTEGER NOT NULL DEFAULT 0,
+    model_used            TEXT,
+    last_error            TEXT,
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_full_story_jobs_project ON full_story_jobs(project_id, created_at);
+
+CREATE TABLE IF NOT EXISTS full_story_sections (
+    job_id                 TEXT NOT NULL,
+    section_index          INTEGER NOT NULL,
+    title                  TEXT NOT NULL DEFAULT '',
+    goal                   TEXT NOT NULL DEFAULT '',
+    target_character_count INTEGER NOT NULL,
+    actual_character_count INTEGER NOT NULL DEFAULT 0,
+    paragraph_id           TEXT,
+    status                 TEXT NOT NULL DEFAULT 'pending',
+    PRIMARY KEY (job_id, section_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_full_story_sections_job ON full_story_sections(job_id, section_index);
+
 CREATE TABLE IF NOT EXISTS detection_records (
     id              TEXT PRIMARY KEY,
     paragraph_id    TEXT NOT NULL,

@@ -10,6 +10,7 @@ export interface CurlStreamOptions {
   model: string;
   accessToken: string;
   accountId: string;
+  maxOutputTokens?: number;
   signal?: AbortSignal;
   onChunk: (chunk: StreamChunk) => void;
   onError: (error: AIError) => void;
@@ -71,6 +72,7 @@ export async function curlStream(options: CurlStreamOptions): Promise<void> {
     input,
     stream: true,
     store: false,
+    ...(options.maxOutputTokens != null ? { max_output_tokens: options.maxOutputTokens } : {}),
   });
 
   return new Promise<void>((resolve) => {
@@ -130,13 +132,14 @@ export async function curlStream(options: CurlStreamOptions): Promise<void> {
               reasoningTokens: typeof rd?.reasoning_tokens === 'number' ? rd.reasoning_tokens : null,
             };
           }
-        } else if (evt.type === 'response.failed') {
+        } else if (evt.type === 'response.failed' || evt.type === 'response.incomplete') {
           errored = true;
           const resp = evt.data.response as Record<string, unknown>;
           const error = resp?.error as Record<string, string> | undefined;
+          const incomplete = resp?.incomplete_details as Record<string, string> | undefined;
           options.onError({
             code: 'UNKNOWN',
-            message: error?.message ?? '生成失敗',
+            message: error?.message ?? (incomplete?.reason ? `模型輸出未完成：${incomplete.reason}` : '生成失敗'),
           });
         }
       }
@@ -201,6 +204,7 @@ export async function curlComplete(options: {
   model: string;
   accessToken: string;
   accountId: string;
+  maxOutputTokens?: number;
   signal?: AbortSignal;
 }): Promise<{ text: string; usage: TokenUsage | null }> {
   let text = '';

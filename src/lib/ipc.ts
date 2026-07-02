@@ -23,6 +23,8 @@ import type {
   CreditsInfo,
   PromptLog,
   ParagraphUsageLog,
+  FullStoryStartRequest,
+  FullStoryJob,
 } from '@/types/ipc';
 import type { GlobalConfig, RecentProject, ParagraphMeta } from '@/types/models';
 
@@ -118,6 +120,19 @@ export const aiApi = {
     ipcInvoke<IpcResult<void>>('ai:testGenerate', req),
   testGenerateCancel: () =>
     ipcInvoke<IpcResult<void>>('ai:testGenerate:cancel'),
+};
+
+export const fullStoryApi = {
+  start: (req: FullStoryStartRequest) =>
+    ipcInvoke<IpcResult<FullStoryJob>>('fullStory:start', req),
+  getStatus: (projectId: string) =>
+    ipcInvoke<IpcResult<FullStoryJob | null>>('fullStory:getStatus', projectId),
+  resume: (projectId: string) =>
+    ipcInvoke<IpcResult<FullStoryJob>>('fullStory:resume', projectId),
+  cancel: (projectId: string) =>
+    ipcInvoke<IpcResult<void>>('fullStory:cancel', projectId),
+  discard: (projectId: string) =>
+    ipcInvoke<IpcResult<void>>('fullStory:discard', projectId),
 };
 
 // ===== Paragraph Management =====

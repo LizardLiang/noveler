@@ -239,9 +239,11 @@ export async function ollamaChatComplete(options: OllamaChatCompleteOptions): Pr
     message?: { content?: string };
     prompt_eval_count?: number;
     eval_count?: number;
+    done_reason?: string;
     error?: string;
   };
   if (data.error) throw new Error(data.error);
+  if (data.done_reason === 'length') throw new Error('模型輸出因長度限制而截斷');
 
   const pt = typeof data.prompt_eval_count === 'number' ? data.prompt_eval_count : null;
   const ct = typeof data.eval_count === 'number' ? data.eval_count : null;
