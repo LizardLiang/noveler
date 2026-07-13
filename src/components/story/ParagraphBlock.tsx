@@ -515,13 +515,36 @@ export const ParagraphBlock = memo(function ParagraphBlock({
             style={{
               position: 'absolute',
               top: statusLabel ? 28 : 0,
-              left: 'calc(100% + 6px)',
+              left: '100%',
+              // Transparent bridge instead of a gap: the toolbar's hit area starts flush
+              // at the block's right edge so moving onto the buttons never crosses a dead
+              // zone that would fire mouseleave and unmount the toolbar mid-reach.
+              paddingLeft: 6,
               display: 'flex',
               flexDirection: 'column',
               gap: 4,
               zIndex: 10,
             }}
           >
+            {/* Safe-triangle hover bridge — a transparent wedge filling the gutter between
+                the block's right edge and the buttons. It's a descendant of the hover
+                container, so keeping the cursor over it (including the diagonal path up to
+                a button) never fires mouseleave and the toolbar stays mounted. Lives only
+                in the empty right gutter, so it never blocks text selection or clicks. */}
+            <span
+              aria-hidden
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: 44,
+                height: 160,
+                // Vertices: buttons (top-left) → top-right → block's lower-right edge.
+                // The hypotenuse hugs every straight path from the bubble up to a button.
+                clipPath: 'polygon(0 0, 100% 0, 0 100%)',
+              }}
+            />
+
             {/* Copy */}
             <ToolbarButton
               title={zhTW.paragraph.copy}
