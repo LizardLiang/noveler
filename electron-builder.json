@@ -45,8 +45,8 @@
   },
   "publish": {
     "provider": "github",
-    "owner": "electron-vite",
-    "repo": "electron-vite-react",
+    "owner": "LizardLiang",
+    "repo": "noveler",
     "releaseType": "release"
   }
 }
